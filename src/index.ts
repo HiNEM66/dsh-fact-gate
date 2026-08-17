@@ -95,8 +95,9 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   }
 
   function isSubagentCall(exec: { agent?: unknown }): boolean {
-    // exec.agent is optional (no-subject calls); sub-agents have delegationDepth > 0.
-    // delegationDepthOf handles a missing agent by returning 0 (depth.ts).
+    // exec.agent is optional (no-subject calls) — delegationDepthOf(undefined)
+    // would throw (depth.ts accesses agent.options), so guard first.
+    if (!exec.agent) return false;
     return delegationDepthOf(exec.agent as never) > 0;
   }
 
