@@ -244,17 +244,18 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   }
 
   /** Run a sub-agent security review of the last N commits (push review). */
-  async function runPushReview(exec: { agent?: unknown }): Promise<string | null> {
+  async function runPushReview(exec: { agent?: unknown; signal?: AbortSignal }): Promise<string | null> {
     const cfg = s();
     if (!cfg.pushReviewEnabled) return null;
     const providers = ctx.subagents.list();
     if (providers.length === 0) return null;
-    // SubagentRuntime.start contract: request.parent is REQUIRED — the child
-    // inherits the parent's provider/model/maxTokens route and delegation
-    // depth via resolveChildDepth/resolveChildAgentOptions which access
-    // parent.options directly (dsh-subagent lib/index.js:486-514, 778-812).
-    // Missing parent → TypeError → the sub-agent never starts (silent).
-    // No parent (subject-less call) → skip the review rather than crash.
+    // SubagentRuntime.start contract: request.parent AND request.signal are
+    // REQUIRED — the in-process driver accesses both directly
+    // (dsh-subagent-in-process-driver lib:156-164: request.signal.aborted,
+    // resolveChildDepth(parent), captureDelegatedPolicyOverrides(parent)).
+    // Missing parent → resolveChildDepth TypeError; missing signal →
+    // undefined.aborted TypeError — either silently kills the review.
+    // No parent (subject-less call) → skip rather than crash.
     const parent = exec.agent;
     if (!parent) {
       ctx.logger.warn('[fact-gate] push review skipped: exec.agent (parent) missing');
@@ -266,6 +267,7 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
         label: 'fact-gate push review',
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
         parent: parent as never,
+        signal: exec.signal ?? new AbortController().signal,
         agentOptions: { maxTokens: 4000 },
       }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string };
       const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
