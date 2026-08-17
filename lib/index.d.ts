@@ -33,7 +33,9 @@ declare module '@deepseek-ai/cordis' {
         settings: {
             register<T>(ns: string, schema: Schema<T>, options?: {
                 applies?: 'live' | 'restart';
-            }): () => T;
+            }): {
+                get(): T;
+            };
         };
     }
 }

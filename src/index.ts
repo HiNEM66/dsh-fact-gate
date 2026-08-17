@@ -44,7 +44,7 @@ import { FACT_GATE_NS, FactGateSettings, FACT_GATE_HOOKS, type FactGateHook, typ
 declare module '@deepseek-ai/cordis' {
   interface Context {
     settings: {
-      register<T>(ns: string, schema: Schema<T>, options?: { applies?: 'live' | 'restart' }): () => T;
+      register<T>(ns: string, schema: Schema<T>, options?: { applies?: 'live' | 'restart' }): { get(): T };
     };
   }
 }
@@ -63,8 +63,11 @@ const RUN_CODE_TOOL = 'run_code';
 
 export function apply(ctx: Context, config: FactGateSettingsValue) {
   // ── Settings (live) + env fallbacks ──
-  const settings = ctx.settings.register(FACT_GATE_NS, FactGateSettings, { applies: 'live' });
-  const s = () => settings();
+  // SettingsScope is an object with get()/watch()/update() — NOT callable.
+  // (packages/settings/settings/src/index.ts:103-116; dsh-ecc lib/index.js:38-49
+  // wraps scope.get() the same way.)
+  const scope = ctx.settings.register(FACT_GATE_NS, FactGateSettings, { applies: 'live' });
+  const s = () => scope.get();
 
   const stateStore = new FactGateStateStore(process.env.FACT_GATE_STATE_DIR);
   stateStore.pruneStaleFiles();
