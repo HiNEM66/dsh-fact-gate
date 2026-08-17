@@ -29,8 +29,11 @@
 import { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 import type { PreToolDecision, PostToolDecision } from '@deepseek-ai/dsh-tools';
-import { delegationDepthOf } from '@deepseek-ai/dsh-subagent';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+// NOTE: 运行时零 @deepseek-ai 依赖（内联纯函数）— hoisted 双实例会破坏
+// dsh 内部 symbol 一致性（TOOL_RUNTIME_SCHEDULER → 'prepare' undefined）。
+import type { UserMessage, ContentBlock } from '@deepseek-ai/dsh-llm';
+import type { Agent } from '@deepseek-ai/dsh-agent';
+import { randomUUID } from 'node:crypto';
 
 import { decideGate, type GateContext } from './gates.ts';
 import { compileExemptGlobs, isGateGuardDisabled } from './detect-destructive.ts';
@@ -61,6 +64,47 @@ const EDIT_TOOLS = new Set(['edit']);
 const STR_REPLACE_EDITOR = 'str_replace_editor';
 const SHELL_TOOLS = new Set(['pwsh', 'bash']);
 const RUN_CODE_TOOL = 'run_code';
+
+// ── Inlined helpers (no runtime @deepseek-ai imports — see NOTE above) ──
+
+// Same augmentation as dsh-subagent depth.ts (AgentOptions.subagentDepth).
+declare module '@deepseek-ai/dsh-agent' {
+  interface AgentOptions {
+    subagentDepth?: number;
+  }
+}
+
+/** Inline of dsh-subagent depth.delegationDepthOf (packages/subagent/subagent/src/depth.ts). */
+function delegationDepthOf(agent: Agent): number {
+  const runtime = agent.options.subagentDepth;
+  if (runtime !== undefined && (!Number.isSafeInteger(runtime) || runtime < 0 || Object.is(runtime, -0))) {
+    throw new TypeError('agent subagentDepth must be a non-negative safe integer');
+  }
+  return Math.max(agent.session.header.delegationDepth ?? 0, runtime ?? 0);
+}
+
+/** Recursive deep-freeze (inline of dsh-llm message.freezeMessage's deepFreeze). */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value as object)) {
+      deepFreeze((value as Record<string, unknown>)[k]);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * Inline of dsh-llm message.createUserMessage (packages/llm/llm/src/message.ts:192):
+ * complete content + source + fresh stable identity + freeze, role 'user'.
+ */
+function createUserMessage(input: { content: ContentBlock[]; source: unknown }): UserMessage {
+  return deepFreeze(structuredClone({
+    ...input,
+    id: `msg-${randomUUID()}`,
+    role: 'user',
+  })) as UserMessage;
+}
 
 export function apply(ctx: Context, config: FactGateSettingsValue) {
   // ── Settings (live) + env fallbacks ──

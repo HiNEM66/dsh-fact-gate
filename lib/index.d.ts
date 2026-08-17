@@ -42,4 +42,9 @@ declare module '@deepseek-ai/cordis' {
 export declare const name = "fact-gate";
 export declare const inject: readonly ["settings"];
 export declare const Config: typeof FactGateSettings;
+declare module '@deepseek-ai/dsh-agent' {
+    interface AgentOptions {
+        subagentDepth?: number;
+    }
+}
 export declare function apply(ctx: Context, config: FactGateSettingsValue): void;
