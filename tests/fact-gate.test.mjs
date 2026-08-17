@@ -9,6 +9,9 @@ import { FactGateStateStore, MAX_CHECKED_ENTRIES, MAX_SESSION_KEYS, SESSION_TIME
 import { editGateMsg, writeGateMsg, destructiveBashMsg, routineBashMsg, condensedGateMsg } from '../lib/messages.js'
 import { decideGate } from '../lib/gates.js'
 import { scanDangerApis, dangerAdvisoryMessage } from '../lib/run-code-advisory.js'
+import { ScopeWarningTracker } from '../lib/scope-warning.js'
+import { DuplicateReadTracker } from '../lib/duplicate-read.js'
+import { isGitPushCommand, formatReviewMessage } from '../lib/push-review.js'
 
 function tempStore() {
   const dir = mkdtempSync(join(tmpdir(), 'fact-gate-test-'))
@@ -317,5 +320,67 @@ describe('messages: templates match CC originals', () => {
     assert.match(destructiveBashMsg(), /one-line rollback procedure/)
     assert.match(routineBashMsg(), /current user request in one sentence/)
     assert.match(condensedGateMsg('edit', '/x/a.ts', 4), /denial #4 this session/)
+  })
+})
+
+// ── 7. Phase-2: scope warning ──
+describe('phase-2: scope warning', () => {
+  it('fires once after threshold edits, per session', () => {
+    const t = new ScopeWarningTracker(() => ({ enabled: true, threshold: 3 }))
+    assert.equal(t.record('s1', 'read', false), null)
+    assert.equal(t.record('s1', 'edit', false), null)
+    assert.equal(t.record('s1', 'write', false), null)
+    const warn = t.record('s1', 'edit', false)
+    assert.match(warn, /SCOPE WARNING/)
+    assert.equal(t.record('s1', 'edit', false), null) // fired once, reset
+    // other session independent
+    assert.equal(t.record('s2', 'edit', false), null)
+  })
+  it('ignores errored calls and non-edit tools', () => {
+    const t = new ScopeWarningTracker(() => ({ enabled: true, threshold: 1 }))
+    assert.equal(t.record('s1', 'edit', true), null) // isError
+    assert.equal(t.record('s1', 'pwsh', false), null) // not edit tool
+  })
+})
+
+// ── 8. Phase-2: duplicate read ──
+describe('phase-2: duplicate read', () => {
+  it('hints on unchanged re-read when enabled', async () => {
+    const { writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const f = join(tmpdir(), `fg-dup-${Date.now()}.txt`)
+    writeFileSync(f, 'same content')
+    const t = new DuplicateReadTracker(() => ({ enabled: true }))
+    assert.equal(t.recordRead('s1', f).duplicate, false) // first read
+    assert.equal(t.recordRead('s1', f).duplicate, true)  // unchanged re-read
+    writeFileSync(f, 'changed!')
+    assert.equal(t.recordRead('s1', f).duplicate, false) // changed
+    assert.match(DuplicateReadTracker.hintMessage(f), /File unchanged since your last Read/)
+  })
+  it('stays silent when disabled', async () => {
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const f = join(tmpdir(), `fg-dup-${Date.now()}.txt`)
+    const t = new DuplicateReadTracker(() => ({ enabled: false }))
+    assert.equal(t.recordRead('s1', f).duplicate, false)
+    assert.equal(t.recordRead('s1', f).duplicate, false)
+  })
+})
+
+// ── 9. Phase-2: push review ──
+describe('phase-2: push review', () => {
+  it('detects git push commands', async () => {
+    assert.equal(isGitPushCommand('git push origin main'), true)
+    assert.equal(isGitPushCommand('git -C /x push -u origin dev'), true)
+    assert.equal(isGitPushCommand('git status'), false)
+    assert.equal(isGitPushCommand('ls'), false)
+  })
+  it('formats review findings', async () => {
+    const msg = formatReviewMessage({ vulns_found: 1, affected_files: ['a.py'], findings: [{ severity: 'HIGH', issue: 'IDOR', suggested_fix: 'add ownership check' }] })
+    assert.match(msg, /\[HIGH\] IDOR/)
+    assert.match(msg, /add ownership check/)
+    const clean = formatReviewMessage({ vulns_found: 0, affected_files: [], findings: [] })
+    assert.match(clean, /No vulnerabilities/)
   })
 })

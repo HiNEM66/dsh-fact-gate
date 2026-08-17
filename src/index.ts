@@ -40,6 +40,9 @@ import { compileExemptGlobs, isGateGuardDisabled } from './detect-destructive.ts
 import { FactGateStateStore, resolveSessionKey, getFullDenialBudget } from './state.ts';
 import { withRecoveryHint, EDIT_WRITE_HOOK_ID, BASH_HOOK_ID } from './messages.ts';
 import { scanDangerApis, dangerAdvisoryMessage } from './run-code-advisory.ts';
+import { ScopeWarningTracker } from './scope-warning.ts';
+import { DuplicateReadTracker } from './duplicate-read.ts';
+import { isGitPushCommand, PUSH_REVIEW_PROMPT, formatReviewMessage, type PushReviewResult } from './push-review.ts';
 import { FACT_GATE_NS, FactGateSettings, FACT_GATE_HOOKS, type FactGateHook, type FactGateSettingsValue } from './settings.ts';
 
 // cordis service augmentation: ctx.settings is provided by the harness
@@ -50,11 +53,25 @@ declare module '@deepseek-ai/cordis' {
     settings: {
       register<T>(ns: string, schema: Schema<T>, options?: { applies?: 'live' | 'restart' }): { get(): T };
     };
+    /** Subagent runtime (dsh-base provides it); injected, never imported. */
+    subagents: {
+      list(): string[];
+      getProvider(name: string): { capabilities: { persona?: boolean; outputSchema?: boolean; toolFilter?: boolean; depthLimit?: boolean } } | undefined;
+      start(provider: string, request: {
+        label: string;
+        prompt: { type: 'text'; text: string }[];
+        parent?: unknown;
+        signal?: AbortSignal;
+        maxDepth?: number;
+        outputSchema?: unknown;
+        agentOptions?: { provider?: string; model?: string; maxTokens?: number };
+      }): Promise<unknown>;
+    };
   }
 }
 
 export const name = 'fact-gate';
-export const inject = ['settings'] as const;
+export const inject = ['settings', 'subagents'] as const;
 
 export const Config: typeof FactGateSettings = FactGateSettings;
 
@@ -203,22 +220,68 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
     return Promise.resolve(next());
   }, { prepend: true });
 
-  // ── tools/post-execute: advisories (run_code danger API + warn-mode attach) ──
-  ctx.on('tools/post-execute', (exec, _result, next): Promise<PostToolDecision> => {
+  // ── Phase-2 trackers ──
+  const scopeWarning = new ScopeWarningTracker(() => ({
+    enabled: s().scopeWarningThreshold > 0,
+    threshold: s().scopeWarningThreshold,
+  }));
+  const duplicateRead = new DuplicateReadTracker(() => ({ enabled: s().duplicateRead }));
+
+  /** Attach a context message to the tool result (correct UserMessage shape). */
+  function attachMessage(text: string): PostToolDecision {
+    return {
+      kind: 'accept',
+      additionalContexts: [createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'plugin', plugin: 'fact-gate' },
+      })],
+    };
+  }
+
+  /** Run a sub-agent security review of the last N commits (push review). */
+  async function runPushReview(): Promise<string | null> {
+    const cfg = s();
+    if (!cfg.pushReviewEnabled) return null;
+    const providers = ctx.subagents.list();
+    if (providers.length === 0) return null;
+    const provider = cfg.pushReviewProvider || providers[0]!;
+    try {
+      const run = await ctx.subagents.start(provider, {
+        label: 'fact-gate push review',
+        prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
+        agentOptions: { maxTokens: 4000 },
+      }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string };
+      const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
+      if (text.trim()) {
+        const jsonStart = text.indexOf('{');
+        if (jsonStart >= 0) {
+          try {
+            const result = JSON.parse(text.slice(jsonStart)) as PushReviewResult;
+            return formatReviewMessage(result);
+          } catch (_) {
+            return `[Fact-Forcing Gate] Push security review (unparsed):\n${text.slice(0, 1200)}`;
+          }
+        }
+        return `[Fact-Forcing Gate] Push security review:\n${text.slice(0, 1200)}`;
+      }
+      return null;
+    } catch (e) {
+      ctx.logger.warn(`[fact-gate] push review failed: ${String(e)}`);
+      return null;
+    }
+  }
+
+  // ── tools/post-execute: advisories (run_code danger API + warn-mode attach + phase-2) ──
+  ctx.on('tools/post-execute', (exec, result, next): Promise<PostToolDecision> => {
+    const sessionKey = sessionKeyFor(exec);
+    const cfg = s();
+
     // run_code danger-API advisory (phase-1, no deny).
-    if (RUN_CODE_TOOL === exec.name && s().runCodeAdvisory && gateEnabled()) {
+    if (RUN_CODE_TOOL === exec.name && cfg.runCodeAdvisory && gateEnabled()) {
       const code = (exec.arguments as Record<string, string> | undefined)?.code ?? '';
       const labels = scanDangerApis(code);
       if (labels.length > 0) {
-        // UserMessage shape must match dsh's NewUserMessage: content is a
-        // ContentBlock[] and a source tag is required (interception.spec.ts:745-753).
-        return Promise.resolve({
-          kind: 'accept',
-          additionalContexts: [createUserMessage({
-            content: [{ type: 'text', text: dangerAdvisoryMessage(labels) }],
-            source: { kind: 'plugin', plugin: 'fact-gate' },
-          })],
-        });
+        return Promise.resolve(attachMessage(dangerAdvisoryMessage(labels)));
       }
     }
 
@@ -226,18 +289,35 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
     const warn = pendingWarns.get(exec.callId ?? '');
     if (warn) {
       pendingWarns.delete(exec.callId ?? '');
-      return Promise.resolve({
-        kind: 'accept',
-        additionalContexts: [createUserMessage({
-          content: [{ type: 'text', text: warn }],
-          source: { kind: 'plugin', plugin: 'fact-gate' },
-        })],
-      });
+      return Promise.resolve(attachMessage(warn));
+    }
+
+    // Phase-2: scope warning — N files modified in one session.
+    const scopeMsg = scopeWarning.record(sessionKey, exec.name, result.isError === true);
+    if (scopeMsg) {
+      return Promise.resolve(attachMessage(scopeMsg));
+    }
+
+    // Phase-2: duplicate-read softening (default OFF).
+    if (exec.name === 'read' && duplicateRead.enabled()) {
+      const filePath = (exec.arguments as Record<string, string> | undefined)?.file_path ?? '';
+      const { duplicate, path } = duplicateRead.recordRead(sessionKey, filePath);
+      if (duplicate) {
+        return Promise.resolve(attachMessage(DuplicateReadTracker.hintMessage(path)));
+      }
+    }
+
+    // Phase-2: push security review — git push completed.
+    if (exec.name === 'pwsh' || exec.name === 'bash') {
+      const command = (exec.arguments as Record<string, string> | undefined)?.command ?? '';
+      if (!result.isError && isGitPushCommand(command) && gateEnabled()) {
+        return runPushReview().then(msg => (msg ? attachMessage(msg) : next()));
+      }
     }
 
     return Promise.resolve(next());
   }, { prepend: true });
 
   // Mount log (fires once at apply — cordis has no typed 'ready' event in Events).
-  ctx.logger.info(`[fact-gate] mounted: hooks=${FACT_GATE_HOOKS.join(',')} deny=${s().deny} profile=${s().profile}`);
+  ctx.logger.info(`[fact-gate] mounted: hooks=${FACT_GATE_HOOKS.join(',')} deny=${s().deny} profile=${s().profile} phase2=${s().scopeWarningThreshold > 0 ? 'scope' : ''}${s().duplicateRead ? '+dup' : ''}${s().pushReviewEnabled ? '+push' : ''}`);
 }

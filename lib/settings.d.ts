@@ -29,6 +29,14 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     enabledHooks: Schema<("edit" | "write" | "destructive-bash" | "routine-bash")[], ("edit" | "write" | "destructive-bash" | "routine-bash")[]>;
     /** Enable the run_code danger-API advisory (post-execute context attach). */
     runCodeAdvisory: Schema<boolean, boolean>;
+    /** Scope warning: warn when a session edits N files (mirrors CC SCOPE WARNING). */
+    scopeWarningThreshold: Schema<number, number>;
+    /** Duplicate-read softening (CC built-in ②) — OFF by default. */
+    duplicateRead: Schema<boolean, boolean>;
+    /** Push security review (CC security-guidance) — subagent provider; '' = first registered. */
+    pushReviewEnabled: Schema<boolean, boolean>;
+    pushReviewProvider: Schema<string, string>;
+    pushReviewMaxCommits: Schema<number, number>;
 }>, Schemastery.ObjectT<{
     /** Total switch. false = completely pass through (env FACT_GATE=off). */
     enabled: Schema<boolean, boolean>;
@@ -48,5 +56,13 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     enabledHooks: Schema<("edit" | "write" | "destructive-bash" | "routine-bash")[], ("edit" | "write" | "destructive-bash" | "routine-bash")[]>;
     /** Enable the run_code danger-API advisory (post-execute context attach). */
     runCodeAdvisory: Schema<boolean, boolean>;
+    /** Scope warning: warn when a session edits N files (mirrors CC SCOPE WARNING). */
+    scopeWarningThreshold: Schema<number, number>;
+    /** Duplicate-read softening (CC built-in ②) — OFF by default. */
+    duplicateRead: Schema<boolean, boolean>;
+    /** Push security review (CC security-guidance) — subagent provider; '' = first registered. */
+    pushReviewEnabled: Schema<boolean, boolean>;
+    pushReviewProvider: Schema<string, string>;
+    pushReviewMaxCommits: Schema<number, number>;
 }>>;
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;

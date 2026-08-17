@@ -32,6 +32,14 @@ export const FactGateSettings = Schema.object({
   enabledHooks: Schema.array(Schema.union(FACT_GATE_HOOKS)).default([...FACT_GATE_HOOKS]),
   /** Enable the run_code danger-API advisory (post-execute context attach). */
   runCodeAdvisory: Schema.boolean().default(true),
+  /** Scope warning: warn when a session edits N files (mirrors CC SCOPE WARNING). */
+  scopeWarningThreshold: Schema.number().default(20).min(1),
+  /** Duplicate-read softening (CC built-in ②) — OFF by default. */
+  duplicateRead: Schema.boolean().default(false),
+  /** Push security review (CC security-guidance) — subagent provider; '' = first registered. */
+  pushReviewEnabled: Schema.boolean().default(true),
+  pushReviewProvider: Schema.string().default(''),
+  pushReviewMaxCommits: Schema.number().default(5).min(1).max(20),
 });
 
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;

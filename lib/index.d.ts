@@ -37,10 +37,38 @@ declare module '@deepseek-ai/cordis' {
                 get(): T;
             };
         };
+        /** Subagent runtime (dsh-base provides it); injected, never imported. */
+        subagents: {
+            list(): string[];
+            getProvider(name: string): {
+                capabilities: {
+                    persona?: boolean;
+                    outputSchema?: boolean;
+                    toolFilter?: boolean;
+                    depthLimit?: boolean;
+                };
+            } | undefined;
+            start(provider: string, request: {
+                label: string;
+                prompt: {
+                    type: 'text';
+                    text: string;
+                }[];
+                parent?: unknown;
+                signal?: AbortSignal;
+                maxDepth?: number;
+                outputSchema?: unknown;
+                agentOptions?: {
+                    provider?: string;
+                    model?: string;
+                    maxTokens?: number;
+                };
+            }): Promise<unknown>;
+        };
     }
 }
 export declare const name = "fact-gate";
-export declare const inject: readonly ["settings"];
+export declare const inject: readonly ["settings", "subagents"];
 export declare const Config: typeof FactGateSettings;
 declare module '@deepseek-ai/dsh-agent' {
     interface AgentOptions {
