@@ -30,6 +30,7 @@ import { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 import type { PreToolDecision, PostToolDecision } from '@deepseek-ai/dsh-tools';
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { decideGate, type GateContext } from './gates.ts';
 import { compileExemptGlobs, isGateGuardDisabled } from './detect-destructive.ts';
@@ -165,20 +166,28 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
       const code = (exec.arguments as Record<string, string> | undefined)?.code ?? '';
       const labels = scanDangerApis(code);
       if (labels.length > 0) {
+        // UserMessage shape must match dsh's NewUserMessage: content is a
+        // ContentBlock[] and a source tag is required (interception.spec.ts:745-753).
         return Promise.resolve({
           kind: 'accept',
-          additionalContexts: [{ role: 'user', content: dangerAdvisoryMessage(labels) } as never],
+          additionalContexts: [createUserMessage({
+            content: [{ type: 'text', text: dangerAdvisoryMessage(labels) }],
+            source: { kind: 'plugin', plugin: 'fact-gate' },
+          })],
         });
       }
     }
 
     // warn-only mode: attach a pending gate warn to the result context.
-    const warn = pendingWarns.get(exec.callId);
+    const warn = pendingWarns.get(exec.callId ?? '');
     if (warn) {
-      pendingWarns.delete(exec.callId);
+      pendingWarns.delete(exec.callId ?? '');
       return Promise.resolve({
         kind: 'accept',
-        additionalContexts: [{ role: 'user', content: warn } as never],
+        additionalContexts: [createUserMessage({
+          content: [{ type: 'text', text: warn }],
+          source: { kind: 'plugin', plugin: 'fact-gate' },
+        })],
       });
     }
 
