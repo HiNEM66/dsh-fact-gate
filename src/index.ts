@@ -244,16 +244,28 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   }
 
   /** Run a sub-agent security review of the last N commits (push review). */
-  async function runPushReview(): Promise<string | null> {
+  async function runPushReview(exec: { agent?: unknown }): Promise<string | null> {
     const cfg = s();
     if (!cfg.pushReviewEnabled) return null;
     const providers = ctx.subagents.list();
     if (providers.length === 0) return null;
+    // SubagentRuntime.start contract: request.parent is REQUIRED — the child
+    // inherits the parent's provider/model/maxTokens route and delegation
+    // depth via resolveChildDepth/resolveChildAgentOptions which access
+    // parent.options directly (dsh-subagent lib/index.js:486-514, 778-812).
+    // Missing parent → TypeError → the sub-agent never starts (silent).
+    // No parent (subject-less call) → skip the review rather than crash.
+    const parent = exec.agent;
+    if (!parent) {
+      ctx.logger.warn('[fact-gate] push review skipped: exec.agent (parent) missing');
+      return null;
+    }
     const provider = cfg.pushReviewProvider || providers[0]!;
     try {
       const run = await ctx.subagents.start(provider, {
         label: 'fact-gate push review',
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
+        parent: parent as never,
         agentOptions: { maxTokens: 4000 },
       }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string };
       const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
@@ -316,7 +328,7 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
     if (exec.name === 'pwsh' || exec.name === 'bash') {
       const command = (exec.arguments as Record<string, string> | undefined)?.command ?? '';
       if (!result.isError && isGitPushCommand(command) && gateEnabled()) {
-        return runPushReview().then(msg => (msg ? attachMessage(msg) : next()));
+        return runPushReview(exec).then(msg => (msg ? attachMessage(msg) : next()));
       }
     }
 
@@ -329,8 +341,15 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
     threshold: s().costWarningThreshold,
   }));
 
+  // NOTE (verified against rc.6): session/event is dispatched on the session
+  // STORE scope — the scopeTarget filter (dsh-scope lib:327-345) admits only
+  // listeners whose ctx tag equals the store key or one of its ancestors.
+  // Neither an agent-scoped listener nor a plugin fiber listener (even with
+  // {global:true} — the store's events instance is out of reach) fires, so
+  // token-usage accumulation via assistant/message is not implementable from
+  // a plugin. FALLBACK: cost warning counts TURNS via agent/turn-stopping,
+  // which IS reachable on agent.ctx (same pattern as dsh-balance).
   ctx.on('agent/created', ({ agent }) => {
-    // Phase-3: cost warning + compaction hook + per-agent project config.
     // agent comes from dsh-agent (typed in its own package); we access a
     // narrow view via structural casts to stay dependency-free at runtime.
     const agentView = agent as unknown as {
@@ -345,24 +364,22 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
       const pc = loadProjectConfig(agentCwd);
       if (pc) projectConfig = pc;
     }
-    // Cost warning + compaction hook on the agent's session event stream.
-    agentView.ctx.on('session/event', (_session, event) => {
-      const ev = event as { type: string; data?: { usage?: TokenUsageLike } };
-      const sessionKey = agentView.id ?? '';
-      if (ev.type === 'assistant/message' && ev.data?.usage) {
-        const msg = costWarning.record(sessionKey, ev.data.usage);
-        if (msg) agentView.inject(createUserMessage({
-          content: [{ type: 'text', text: msg }],
-          source: { kind: 'plugin', plugin: 'fact-gate' },
-        }));
-      } else if (ev.type === 'compaction/start' && s().compactionNotice) {
-        // Phase-3: compaction/start — the dsh equivalent of CC's PreCompact.
+    // Cost warning via turn counting (agent-scope event, reachable).
+    let turns = 0;
+    agentView.ctx.on('agent/turn-stopping', () => {
+      turns += 1;
+      const threshold = s().costWarningThreshold > 0 ? Math.max(1, Math.floor(s().costWarningThreshold / 10000)) : 0;
+      if (threshold > 0 && turns >= threshold) {
+        turns = 0;
         agentView.inject(createUserMessage({
-          content: [{ type: 'text', text: '[Fact-Forcing Gate] Session context is being compacted — important decisions/files from earlier may be summarized away. Note anything that must survive before the summary is written.' }],
+          content: [{ type: 'text', text: `[Fact-Forcing Gate] COST WARNING: session reached ~${threshold * 10000} tokens (est. ${threshold} turns at ~10k tokens each). Consider whether the task warrants the accumulated cost.` }],
           source: { kind: 'plugin', plugin: 'fact-gate' },
         }));
       }
     });
+    // Compaction notice: compaction/start lives in the same store-scoped
+    // session stream — not reachable from a plugin (platform limit). Kept as
+    // a documented TODO for when dsh exposes a reachable pre-compaction event.
   });
 
   // Mount log (fires once at apply — cordis has no typed 'ready' event in Events).
