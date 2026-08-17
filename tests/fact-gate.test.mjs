@@ -91,6 +91,33 @@ describe('detect-destructive: layer 4 (rm / git)', () => {
   })
 })
 
+describe('detect-destructive: pwsh native cmdlets (dsh command surface)', () => {
+  it('catches Remove-Item in all forms', () => {
+    assert.equal(isDestructiveBash('Remove-Item -LiteralPath C:/tmp/x -Force', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('remove-item -Recurse -Force D:/x', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('Remove-ItemProperty HKLM:\\Software\\x -Name y', EMPTY_CONFIG), true)
+  })
+  it('catches Clear-Content / Clear-Item / Clear-RecycleBin', () => {
+    assert.equal(isDestructiveBash('Clear-Content file.txt', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('Clear-Item D:/logs/*', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('Clear-RecycleBin -Force', EMPTY_CONFIG), true)
+  })
+  it('catches disk format / initialization cmdlets', () => {
+    assert.equal(isDestructiveBash('Format-Volume -DriveLetter C -Force', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('Initialize-Disk -Number 1', EMPTY_CONFIG), true)
+    assert.equal(isDestructiveBash('Clear-Disk -Number 2 -RemoveData', EMPTY_CONFIG), true)
+  })
+  it('does not false-positive on harmless pwsh cmdlets', () => {
+    assert.equal(isDestructiveBash('Get-Item C:/x', EMPTY_CONFIG), false)
+    assert.equal(isDestructiveBash('Set-Content file.txt hello', EMPTY_CONFIG), false)
+    assert.equal(isDestructiveBash('Write-Host "Remove-Item is mentioned in docs"', EMPTY_CONFIG), false)
+    assert.equal(isDestructiveBash('Get-Process', EMPTY_CONFIG), false)
+  })
+  it('catches quoted pwsh cmdlet words (layer 5)', () => {
+    assert.equal(isDestructiveBash("'Remove-Item' -Recurse -Force D:/x", EMPTY_CONFIG), true)
+  })
+})
+
 describe('detect-destructive: layer 5 (quote-aware bypasses, GHSA-4v57-ph3x-gf55)', () => {
   it('catches quoted command words', () => {
     assert.equal(isDestructiveBash("'rm' -rf /tmp/x", EMPTY_CONFIG), true)

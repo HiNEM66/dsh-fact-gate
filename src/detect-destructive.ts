@@ -403,6 +403,24 @@ function isDestructiveFindExec(command: string): boolean {
 }
 
 /**
+ * PowerShell 原生破坏性 cmdlet（dsh 命令面是 pwsh，需与 bash 检测并列）。
+ * 覆盖 Remove-Item 等非 rm 别名形态 — bash token 检测漏掉的真实盲区
+ * (Remove-Item -LiteralPath X -Force 实测逃过门禁)。
+ * 保守选取: 仅明确破坏性(删除/清空/格式化/磁盘初始化), 不含无害 cmdlet
+ * (如 clear-variable / remove-variable)。
+ */
+const PW_DESTRUCTIVE_CMDLETS = new Set([
+  'remove-item', 'remove-childitem', 'remove-itemproperty', 'remove-pssnapin',
+  'clear-content', 'clear-item', 'clear-recyclebin', 'clear-disk',
+  'format-volume', 'format-disk', 'initialize-disk',
+]);
+
+function isDestructivePwsh(tokens: string[]): boolean {
+  if (tokens.length === 0) return false;
+  return PW_DESTRUCTIVE_CMDLETS.has(commandBasename(tokens[0]!));
+}
+
+/**
  * Quote-aware destructive pass (layer 5): catches quoted command words,
  * newline separators, quoted find-exec, and sh -c / bash -c wrappers
  * (GHSA-4v57-ph3x-gf55). Recursion guard for shell -c wrappers.
@@ -413,6 +431,7 @@ function isDestructiveQuoteAware(raw: string, depth = 0, config: DetectorConfig)
     if (tokens.length === 0) continue;
     if (isDestructiveRm(tokens)) return true;
     if (isDestructiveGit(tokens)) return true;
+    if (isDestructivePwsh(tokens)) return true;
     if (isDestructiveFindExec(tokens.join(' '))) return true;
     const base = commandBasename(tokens[0]!);
     if (SHELL_WRAPPERS.has(base)) {
@@ -549,6 +568,7 @@ export function isDestructiveBash(command: string, config: DetectorConfig): bool
     const tokens = tokenize(segment);
     if (isDestructiveRm(tokens)) return true;
     if (isDestructiveGit(tokens)) return true;
+    if (isDestructivePwsh(tokens)) return true;
   }
 
   // Layer 5: quote-aware pass.
