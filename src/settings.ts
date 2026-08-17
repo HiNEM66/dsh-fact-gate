@@ -40,6 +40,10 @@ export const FactGateSettings = Schema.object({
   pushReviewEnabled: Schema.boolean().default(true),
   pushReviewProvider: Schema.string().default(''),
   pushReviewMaxCommits: Schema.number().default(5).min(1).max(20),
+  /** Session token threshold for COST WARNING (0 = off). */
+  costWarningThreshold: Schema.number().default(1_000_000).min(0),
+  /** Inject a notice when the session context is compacted (compaction/start). */
+  compactionNotice: Schema.boolean().default(true),
 });
 
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;

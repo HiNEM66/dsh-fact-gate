@@ -42,6 +42,8 @@ import { withRecoveryHint, EDIT_WRITE_HOOK_ID, BASH_HOOK_ID } from './messages.t
 import { scanDangerApis, dangerAdvisoryMessage } from './run-code-advisory.ts';
 import { ScopeWarningTracker } from './scope-warning.ts';
 import { DuplicateReadTracker } from './duplicate-read.ts';
+import { CostWarningTracker, type TokenUsageLike } from './cost-warning.ts';
+import { loadProjectConfig, mergeProjectConfig } from './project-config.ts';
 import { isGitPushCommand, PUSH_REVIEW_PROMPT, formatReviewMessage, type PushReviewResult } from './push-review.ts';
 import { FACT_GATE_NS, FactGateSettings, FACT_GATE_HOOKS, type FactGateHook, type FactGateSettingsValue } from './settings.ts';
 
@@ -129,7 +131,10 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   // (packages/settings/settings/src/index.ts:103-116; dsh-ecc lib/index.js:38-49
   // wraps scope.get() the same way.)
   const scope = ctx.settings.register(FACT_GATE_NS, FactGateSettings, { applies: 'live' });
-  const s = () => scope.get();
+  // Phase-3: project-level .fact-gate.yml overlays the user settings
+  // (loaded from the process cwd; refreshed per agent when its cwd differs).
+  let projectConfig = loadProjectConfig(process.cwd());
+  const s = () => mergeProjectConfig(scope.get(), projectConfig) as FactGateSettingsValue;
 
   const stateStore = new FactGateStateStore(process.env.FACT_GATE_STATE_DIR);
   stateStore.pruneStaleFiles();
@@ -317,6 +322,48 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
 
     return Promise.resolve(next());
   }, { prepend: true });
+
+  // ── Phase-3: cost warning + compaction hook + per-agent project config ──
+  const costWarning = new CostWarningTracker(() => ({
+    enabled: s().costWarningThreshold > 0,
+    threshold: s().costWarningThreshold,
+  }));
+
+  ctx.on('agent/created', ({ agent }) => {
+    // Phase-3: cost warning + compaction hook + per-agent project config.
+    // agent comes from dsh-agent (typed in its own package); we access a
+    // narrow view via structural casts to stay dependency-free at runtime.
+    const agentView = agent as unknown as {
+      id: string;
+      session: { header: { cwd?: string; delegationDepth?: number } };
+      inject(context: UserMessage): void;
+      ctx: Context;
+    };
+    // Per-agent project config refresh (session cwd may differ from process cwd).
+    const agentCwd = agentView.session.header.cwd;
+    if (agentCwd && agentCwd !== process.cwd()) {
+      const pc = loadProjectConfig(agentCwd);
+      if (pc) projectConfig = pc;
+    }
+    // Cost warning + compaction hook on the agent's session event stream.
+    agentView.ctx.on('session/event', (_session, event) => {
+      const ev = event as { type: string; data?: { usage?: TokenUsageLike } };
+      const sessionKey = agentView.id ?? '';
+      if (ev.type === 'assistant/message' && ev.data?.usage) {
+        const msg = costWarning.record(sessionKey, ev.data.usage);
+        if (msg) agentView.inject(createUserMessage({
+          content: [{ type: 'text', text: msg }],
+          source: { kind: 'plugin', plugin: 'fact-gate' },
+        }));
+      } else if (ev.type === 'compaction/start' && s().compactionNotice) {
+        // Phase-3: compaction/start — the dsh equivalent of CC's PreCompact.
+        agentView.inject(createUserMessage({
+          content: [{ type: 'text', text: '[Fact-Forcing Gate] Session context is being compacted — important decisions/files from earlier may be summarized away. Note anything that must survive before the summary is written.' }],
+          source: { kind: 'plugin', plugin: 'fact-gate' },
+        }));
+      }
+    });
+  });
 
   // Mount log (fires once at apply — cordis has no typed 'ready' event in Events).
   ctx.logger.info(`[fact-gate] mounted: hooks=${FACT_GATE_HOOKS.join(',')} deny=${s().deny} profile=${s().profile} phase2=${s().scopeWarningThreshold > 0 ? 'scope' : ''}${s().duplicateRead ? '+dup' : ''}${s().pushReviewEnabled ? '+push' : ''}`);

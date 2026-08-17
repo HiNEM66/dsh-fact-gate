@@ -37,6 +37,10 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     pushReviewEnabled: Schema<boolean, boolean>;
     pushReviewProvider: Schema<string, string>;
     pushReviewMaxCommits: Schema<number, number>;
+    /** Session token threshold for COST WARNING (0 = off). */
+    costWarningThreshold: Schema<number, number>;
+    /** Inject a notice when the session context is compacted (compaction/start). */
+    compactionNotice: Schema<boolean, boolean>;
 }>, Schemastery.ObjectT<{
     /** Total switch. false = completely pass through (env FACT_GATE=off). */
     enabled: Schema<boolean, boolean>;
@@ -64,5 +68,9 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     pushReviewEnabled: Schema<boolean, boolean>;
     pushReviewProvider: Schema<string, string>;
     pushReviewMaxCommits: Schema<number, number>;
+    /** Session token threshold for COST WARNING (0 = off). */
+    costWarningThreshold: Schema<number, number>;
+    /** Inject a notice when the session context is compacted (compaction/start). */
+    compactionNotice: Schema<boolean, boolean>;
 }>>;
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;

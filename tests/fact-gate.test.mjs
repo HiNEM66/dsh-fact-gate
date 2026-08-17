@@ -384,3 +384,50 @@ describe('phase-2: push review', () => {
     assert.match(clean, /No vulnerabilities/)
   })
 })
+
+// ── 10. Phase-3: cost warning ──
+describe('phase-3: cost warning', () => {
+  it('fires once above token threshold, per session', async () => {
+    const { CostWarningTracker } = await import('../lib/cost-warning.js')
+    const t = new CostWarningTracker(() => ({ enabled: true, threshold: 100 }))
+    assert.equal(t.record('s1', { inputTokens: 40, outputTokens: 20 }), null)  // 60
+    assert.equal(t.record('s1', { inputTokens: 10, outputTokens: 10 }), null)  // 80
+    const warn = t.record('s1', { inputTokens: 10, outputTokens: 10 })         // 100 → fire
+    assert.match(warn, /COST WARNING/)
+    assert.equal(t.record('s1', { inputTokens: 10, outputTokens: 10 }), null)  // 20, below again
+    assert.match(t.record('s1', { inputTokens: 90, outputTokens: 10 }), /COST WARNING/) // 120 → re-fire
+    assert.equal(t.record('s2', { inputTokens: 10 }), null) // other session independent
+  })
+  it('ignores zero usage and disabled config', async () => {
+    const { CostWarningTracker } = await import('../lib/cost-warning.js')
+    const t = new CostWarningTracker(() => ({ enabled: false, threshold: 1 }))
+    assert.equal(t.record('s1', { inputTokens: 10 }), null)
+    const t2 = new CostWarningTracker(() => ({ enabled: true, threshold: 1 }))
+    assert.equal(t2.record('s1', {}), null) // zero usage
+  })
+})
+
+// ── 11. Phase-3: project config ──
+describe('phase-3: project config', () => {
+  it('merges known keys over settings, ignores unknown', async () => {
+    const { mergeProjectConfig } = await import('../lib/project-config.js')
+    const base = { enabled: true, deny: true, threshold: 10, unknownBase: 1 }
+    const merged = mergeProjectConfig(base, { deny: false, bogusKey: 42 })
+    assert.equal(merged.deny, false)
+    assert.equal(merged.enabled, true)
+    assert.equal(merged.bogusKey, undefined)
+    assert.equal(mergeProjectConfig(base, null), base)
+  })
+  it('loads .fact-gate.yml from a project dir', async () => {
+    const { loadProjectConfig } = await import('../lib/project-config.js')
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'fg-proj-'))
+    writeFileSync(join(dir, '.fact-gate.yml'), 'fact-gate:\n  deny: false\n')
+    const cfg = loadProjectConfig(dir)
+    // loadProjectConfig returns the whole file; the plugin reads the top-level object
+    assert.ok(cfg !== null)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
