@@ -1,0 +1,9 @@
+{
+  "name": "dsh-fact-gate",
+  "description": "Fact-Forcing Gate for DeepSeek Harness: DENY→FORCE→ALLOW gates on Edit/Write/Destructive-pwsh/Routine-pwsh + run_code danger-API advisory.",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-fact-gate",
+    "inject": ["settings"]
+  }
+}

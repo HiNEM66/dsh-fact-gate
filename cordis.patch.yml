@@ -1,0 +1,7 @@
+# dsh-fact-gate bundle patch: one insert over the profile's composed tree.
+# A profile that lists this package in `dsh.profile.bundles` gets this row
+# automatically; a profile-level cordis.patch.yml may still target the row by
+# id (`fact-gate`) to replace its whole config.
+- insert:
+    - id: fact-gate
+      name: dsh-fact-gate
