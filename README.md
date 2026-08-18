@@ -112,6 +112,18 @@ scopeWarningThreshold: 10
 | `FACT_GATE_BASH_EXTRA_DESTRUCTIVE` | 自定义破坏性正则（层 2，非法正则 fail-open） |
 | `FACT_GATE_STATE_DIR` | 状态目录覆盖（默认 `~/.dsh/fact-gate`） |
 
+**默认值设计理由**（为什么有些功能默认关）：
+
+| 默认状态 | 项 | 理由 |
+|---|---|---|
+| ✅ 开 | 四道门 / push 审查 / 范围告警 / run_code 告警 / 成本告警（1M token 阈值） | 核心防护——开箱即用，无需配置 |
+| ⚠️ 逃生开关（默认不设置） | `FACT_GATE=off` / `FACT_GATE_ROUTINE_BASH=off` / `FACT_GATE_DISABLED_HOOKS` | 紧急出口——**不设置 = 功能全开**；设置了才禁用 |
+| ❌ 默认关 | `duplicateRead` | 会**改变 read 工具行为**（注入 hint）——与 dsh read 工具契约、其他插件/子代理的 read 语义可能冲突；CC 是 harness 强制，dsh 只能软实现，默认关避免干扰 |
+| ❌ 默认关 | `compactionNotice` | 通知是注入消息（消耗上下文 token），不是所有用户都需要；压缩不频繁，按需开启 |
+| 🔸 阈值类 | `costWarningThreshold: 1000000`（1M token）/ `scopeWarningThreshold: 20`（文件数） | 高阈值避免频繁打扰，可按需调低（0 = 关） |
+
+**建议**：核心功能默认全开即可；`duplicateRead` 保持默认关（read 语义副作用）；`compactionNotice` 按需开启。
+
 ---
 
 ## 架构与实现
