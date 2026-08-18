@@ -348,3 +348,51 @@ Present the facts, then retry the same operation.
 5. **机制层级**：用户指令 > skills > 默认行为；拦截型（GateGuard/内置约束）vs 引导型（superpowers/mnemon）之分。
 
 ---
+
+## 七、dsh-fact-gate 移植映射（2026-08-18 补充）
+
+> 本文档描述的 CC 机制已由本仓库插件 **dsh-fact-gate**（`HiNEM66/dsh-fact-gate`）移植到 DeepSeek Harness。下表给出每节机制 → dsh 实现文件/行为 的对应关系，供对照阅读。全部功能真机验证通过（web profile，2026-08-18）。
+
+### 7.1 GateGuard（第三章）→ dsh-fact-gate
+
+| CC 机制（章节） | dsh 实现 | 差异说明 |
+|---|---|---|
+| 3.3① Edit 门（每文件首触） | `src/gates.ts` + `tools/pre-execute` 拦截，`isChecked(filePath)` 状态机 | 工具面 `edit`/`str_replace_editor`（str_replace/insert），无 MultiEdit（dsh 无此工具） |
+| 3.3② Write 门 | 同 Edit 门，`write`/`str_replace_editor`(create) 分支 | 消息模板逐字移植（`src/messages.ts`） |
+| 3.3③ Destructive Bash 门 | `src/detect-destructive.ts` 5 层 + 12 个 pwsh cmdlet | 命令面 `pwsh`/`bash`；`git push --force` 在层 4 |
+| 3.3④ Routine Bash 门 | 同 pre-execute，`__bash_session__` 会话键 | 真机每会话首条命令拦截实证 |
+| 3.4 判定流程 | `src/index.ts` apply 内 pre-execute 监听器 | deny reason 经 `Error: {reason}` 回模型（同 3.9 交互效应） |
+| 3.5 破坏性五层 | `detect-destructive.ts`（层 1 SQL 正则/层 2 自定义/层 3 find-exec/层 4 rm+git/层 5 quote-aware） | 原 JS 逐逻辑搬运 + GHSA-4v57-ph3x-gf55 四类绕过单测 |
+| 3.6 状态机 | `src/state.ts`（500 条目/50 会话键/30min 超时/原子写/剪枝） | 状态目录 `~/.dsh/fact-gate/`（FACT_GATE_STATE_DIR 覆盖） |
+| 3.6 预算（3 次全块→单行） | `fullDenials` settings（默认 3）+ `condensedGateMsg` | 同 CC 防膨胀动机 |
+| 3.6 豁免 | git 内省白名单 / `exemptGlobs` / settings 路径 / 子代理（`delegationDepthOf > 0`） | 子代理豁免 = 方案 A（全局监听 + exec.agent 判定） |
+| 3.7 逃生 | `FACT_GATE=off` / `FACT_GATE_DISABLED_HOOKS` / `FACT_GATE_ROUTINE_BASH=off` | env 名从 `ECC_*`/`GATEGUARD_*` 改为 `FACT_GATE_*` |
+| 3.8 消息模板 | `src/messages.ts` 逐字移植（Edit/Write/Destructive/Routine/condensed） | 英文与 CC 一致；恢复提示带 FACT_GATE env |
+
+### 7.2 配套机制（第四章）→ dsh-fact-gate
+
+| CC 机制（章节） | dsh 实现 | 差异说明 |
+|---|---|---|
+| 4.1 mnemon hooks | **dsh-mnemon 插件**（非本插件） | dsh 侧由独立插件承担 |
+| 4.2 PreCompact/compaction | `src/compaction.ts` + `index.ts`：压缩后通知 | **压缩后**注入（`agent/pre-step` + `agent/turn-stopping` + timer 兜底扫描 `session.events` 的 `compaction/start`）；无"压缩前"信号（CC 是压缩前 hook） |
+| 4.3 security-guidance push 审查 | `src/push-review.ts` + `index.ts` 双路径（native post-execute / code-mode code-dispatch-log） | 子代理 structured_output 结构化产出 + 注入；"不得仅因内部服务 dismiss" 写入 prompt |
+| 4.4 superpowers | 不移植（dsh 有 skill 体系） | — |
+| 4.5 成本/范围/文件变更 | 成本 `cost-warning.ts`（turn 估算降级）/ 范围 `scope-warning.ts` / 文件变更通知**不实现**（dsh 无文件 watcher，见 README 平台限制） | 成本用 turn 计数（`assistant/message.usage` 在 store 作用域不可达） |
+
+### 7.3 内置约束（第二章）→ dsh/插件
+
+| CC 内置约束 | dsh 状态 |
+|---|---|
+| ① 改前必读 | dsh-ecc 已实现（纪律门） |
+| ② 不可重复读 | `duplicate-read.ts`（默认 OFF，hint 非强制——read 工具契约） |
+| ③ 工具结果即事实 / ④ 后台不可预测 / ⑤ 权限模式 | dsh harness 天然行为（等价） |
+
+### 7.4 排查沉淀（dsh 移植特有，非 CC 对应）
+
+- **运行时零 @deepseek-ai 依赖**：hoisted 双实例破坏 symbol 一致性（`TOOL_RUNTIME_SCHEDULER`）——`import type` + 内联纯函数
+- **code mode 命令载体**：`CodeDispatchLog.exec` 是外层 `run_code`（`arguments={code,description}`）——命令从 `code` 程序文本宽松匹配（详见 README 调试历程 #5）
+- **`SubagentRun` 结果协议**：`start()` 返回句柄，结果在 `run.result` Promise（dsh-subagent types.ts:204）
+- **会话 resume 挂载**：resume 不 re-emit `agent/created`——`agent/status` + apply 时 `list()` 补挂
+- **插件日志无痕**：harness 未挂 console exporter——排查用临时磁盘日志（已移除）
+
+---

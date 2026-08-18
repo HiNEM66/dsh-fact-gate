@@ -58,11 +58,18 @@ Fact-Forcing Gate for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 
 ## 安装
 
+从 GitHub 安装（在 deepseek-harness 目录执行）：
+
 ```bash
-dsh plugin --profile web add github:HiNEM66/dsh-fact-gate
+pnpm dsh plugin --profile web add github:HiNEM66/dsh-fact-gate
+pnpm dsh --profile web        # 重启生效
 ```
 
-或本地依赖（`file:`）+ `dsh.profile.bundles` 追加 `dsh-fact-gate`（见 dsh-plugin-orchestra 流程）。
+或本地依赖（`file:`）+ `dsh.profile.bundles` 追加 `dsh-fact-gate`（见 dsh-plugin-orchestra 流程）。安装后可验证版本：
+
+```bash
+grep -c "await run.result" "C:\Users\<用户>\.dsh\profiles\web\node_modules\dsh-fact-gate\lib\index.js"  # ≥1 为修复版
+```
 
 ## 配置（`~/.dsh/settings.yaml`，live 重载）
 
@@ -92,6 +99,18 @@ fact-gate:
 deny: false
 scopeWarningThreshold: 10
 ```
+
+**环境变量**（与 GateGuard 原始入口兼容 + 逃生）：
+
+| 变量 | 作用 |
+|---|---|
+| `FACT_GATE=off` | 完全禁用（同 `enabled:false`） |
+| `FACT_GATE_ROUTINE_BASH=off` | 只关 routine 门（destructive 门仍生效） |
+| `FACT_GATE_DISABLED_HOOKS` | 逗号分隔按门禁用：hook id（`pre:edit-write:fact-gate` / `pre:bash:fact-gate`）或裸门名（`edit` / `write` / `destructive-bash` / `routine-bash`） |
+| `FACT_GATE_FULL_DENIALS` | 覆盖全块拦截预算（settings `fullDenials` 优先） |
+| `FACT_GATE_EXEMPT_GLOBS` | 逗号分隔豁免路径 glob（支持 `**`） |
+| `FACT_GATE_BASH_EXTRA_DESTRUCTIVE` | 自定义破坏性正则（层 2，非法正则 fail-open） |
+| `FACT_GATE_STATE_DIR` | 状态目录覆盖（默认 `~/.dsh/fact-gate`） |
 
 ---
 
@@ -168,6 +187,8 @@ src/
 
 ## 调试历程（真机根因沉淀）
 
+### 一期（headless 真机，2026-08-18 上午）
+
 | # | 报错 | 根因 | 修复 |
 |---|---|---|---|
 | 1 | `settings is not a function` | `SettingsScope` 是 `{get()}` 对象非函数 | `scope.get()`（对照 dsh-ecc lib/index.js:38-49） |
@@ -177,11 +198,33 @@ src/
 
 外部审查发现的盲区：PowerShell 原生 `Remove-Item` 逃过 bash 形态检测（实测删除成功）→ 内置 12 个 pwsh 破坏性 cmdlet。
 
+### push 安全审查（web 真机四层根因，2026-08-18 下午）
+
+> 现象：web profile（code mode）push 后审查从不触发。逐层排查定位四层**独立**根因，全部修复后真机全链路打通。详细记录见 plan.md 11.6。
+
+| # | 根因 | 修复 |
+|---|---|---|
+| 5 | **code mode 命令载体错位**：`CodeDispatchLog.exec` 是外层 `run_code` 执行（`arguments = {code, description}`），插件读 `exec.arguments.command` 恒 undefined——会话日志里序列化的 `arguments.command` 是**内层参数副本**，误导排查方向 | 命令来源改 `exec.arguments.code`（内层调用以 `tools.pwsh({command: \`git ${...} push\`})` 存在于 code 程序）+ 新增按行宽松匹配 `isGitPushCommandLax`（模板变量无法静态展开；误报由 `->` 成功标志兜底） |
+| 6 | **schema 关键字不支持**：`PUSH_REVIEW_SCHEMA` 的 `vulns_found.minimum` 不在 provider 的 JSON-schema 子集（type/oneOf/properties/required/additionalProperties/items/enum/const + annotations）→ `subagents.start` 抛 JsonSchemaError 静默失败 | 移除 `minimum`；守护测试断言 schema 不再含 unsupported 关键字 |
+| 7 | **start 结果读取协议错误**：`subagents.start()` 返回 `SubagentRun` 句柄（`{id, localAgent, result, dispose}`），结果在 `run.result: Promise<SubagentResult>` 异步 settle；插件直接读 `run.output/run.structured/run.stopReason` 全是 undefined → 判空返回 → 无注入、子代理孤跑（session 只剩 header） | `await run.result` 拿 `SubagentResult`（{output, stopReason, structured?}），finally `run.dispose()` |
+| 8 | **可观测性缺失**：harness 未挂 console exporter，插件 logger 只进内存 buffer——所有静默失败路径真机无痕，排查靠猜 | 临时磁盘诊断日志（`<stateDir>/fact-gate-debug.log`，每步判定落盘，一轮定位 #5-7；排查完成移除，插件保持零额外日志） |
+
+### compaction 钩子（web 真机演进，2026-08-18 晚）
+
+> 现象：`/compact` 压缩成功（`Compacted 43 history items`）但通知不注入。三次演进后真机注入验证通过。
+
+| # | 根因 | 修复 |
+|---|---|---|
+| 9 | **设置未生效疑云**：先确认 settings.yaml `fact-gate.compactionNotice: true` 与 schema 读取机制（yaml 顶层 key = NS，`document[ns]`）——设置本身正确 | （排除项） |
+| 10 | **resume 挂载盲区**：旧会话在 web 重启后 resume **不 re-emit `agent/created`**（announce 只在 register 时）→ attachAgent 从未执行 → 监听器未挂载。冷恢复实测**会**触发 agent/created ✓ | 补 `agent/status` 触发点（生命周期转换必发；attachedAgents seen set 去重） |
+| 11 | **扫描点不足**：`/compact` 经 **command 通道**完成（`command/done` 是 session 事件非 cordis 事件），压缩后通常**零 step/turn**——`agent/pre-step` + `agent/turn-stopping` 都不触发 | 加 **timer 兜底**（base bundle timer 行，`ctx.get('timer')` 非严格读）每 30s 扫所有 attached agent 的 scanner——压缩后 ≤30s 注入 |
+| 12 | **压缩被拒（busy）**：压缩进行中或 agent 非 idle 时 `/compact` 返回 `busy`（"Compaction is unavailable..."）——无压缩发生则插件不注入（正确行为） | 非插件问题（dsh 压缩命令预期错误）；用户操作建议：等 agent 空闲再执行 |
+
 ---
 
 ## 测试
 
-51/51 单测全绿（node:test，直接测构建产物）：
+**54/54 单测全绿**（node:test，直接测构建产物）：
 
 - 破坏性检测 5 层逐层（含 4 类绕过 + pwsh cmdlet 12 个 + 引号绕过）
 - 状态机（500 剪枝/50 会话键/30min 超时/原子写/合并）
@@ -189,9 +232,12 @@ src/
 - 豁免判定（git 内省/glob/settings 路径/子代理）
 - 工具映射（edit/write/str_replace_editor 三分支/pwsh/run_code）
 - warn-only 模式、DENY→FORCE→ALLOW 重试放行
-- run_code 告警、范围告警、重复读、push 审查、成本告警、项目配置
+- run_code 告警、范围告警、重复读、push 审查（命令匹配 + schema 关键字守护）、成本告警、项目配置、compaction 扫描
 
-真机验证（headless + web profile）：Write 门拦截（4 事实）、破坏性门拦截（rm + Remove-Item，目标/回滚/指令）、routine 门、DENY→FORCE→ALLOW 闭环、列目录/读写文件正常。
+真机验证：
+
+- **headless profile**：Write 门拦截（4 事实）、破坏性门拦截（rm + Remove-Item，目标/回滚/指令）、routine 门、DENY→FORCE→ALLOW 闭环、列目录/读写文件正常
+- **web profile（2026-08-18）**：门禁全链路；push 安全审查双路径触发（native post-execute + code-mode code-dispatch-log）、子代理 structured_output 结构化产出（211 行 + 1840 行事件，turn/end completed）、审查报告注入 agent 会话（"No vulnerabilities" + 审出 4 个问题两次实例）；compaction 钩子 `/compact` → 通知注入（agent/inbox/spliced 实证）
 
 ```bash
 npm test          # 单测
@@ -205,11 +251,11 @@ npm run build     # tsc → lib/
 | 期 | 内容 | 状态 |
 |---|---|---|
 | 一期 | 4 门 + 状态机 + run_code 告警 | ✅ |
-| 二期 | 范围告警 + 重复读 + push 审查 | ✅（push 审查 2026-08-18 真机验证：双路径触发 + 子代理结构化产出 + 注入，见排查记录） |
-| 三期 | 成本告警（turn 估算）+ 项目配置 + compaction 钩子（⚠️ 平台限制，未接线） | ⚠️ |
+| 二期 | 范围告警 + 重复读 + push 审查 | ✅（push 审查 2026-08-18 真机验证：双路径触发 + 子代理结构化产出 + 注入，见调试历程 #5-8） |
+| 三期 | 成本告警（turn 估算）+ 项目配置 + compaction 钩子 | ✅（compaction 2026-08-18 真机验证：/compact → 通知注入，见调试历程 #9-12） |
 | 四期（待定） | 进程外子代理语义对齐 / run_code 全语义检测 / 市场发布与文档站点 / 与 dsh-mnemon 深度集成 | ⏳ 视需求 |
 
-完整设计与评估记录见 [flex-ate-framework docs/dsh-fact-gate-plan.md](https://github.com/HiNEM66/flex-ate-framework/blob/master/docs/dsh-fact-gate-plan.md)。
+完整方案、可行性评估与排查记录见 [docs/dsh-fact-gate-plan.md](docs/dsh-fact-gate-plan.md)（本仓库，从 flex-ate-framework 迁移）。
 
 ## License
 
