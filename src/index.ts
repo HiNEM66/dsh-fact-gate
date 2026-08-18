@@ -340,6 +340,11 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
       // signal 会在审查完成前被连带取消 (实测: 子代理创建后 ~1s 被
       // turn/end aborted/parent 杀死, 审查永不产出)。自持 signal 与
       // 工具生命周期解耦, 审查独立跑完。
+      // start() 返回 SubagentRun 句柄（{id, localAgent, result, dispose}）——
+      // 子代理结果在 run.result: Promise<SubagentResult> 里（dsh-subagent
+      // types.ts:204 "resolved by SubagentRun.result"）。直接读 run.output/
+      // run.structured 是协议错误：start 55ms 内只完成子代理创建（session
+      // header 落盘），真实结果异步 settle。
       const run = await subagents.start(provider, {
         label: 'fact-gate push review',
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
@@ -354,27 +359,32 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         // 收敛由 outputSchema 保证, 无需数值兜底。
         outputSchema: PUSH_REVIEW_SCHEMA,
         agentOptions: {},
-      }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string; structured?: unknown };
-      // structured 优先: outputSchema 满足时 provider 返回校验过的 JSON。
-      // 旧路径保留: stopReason 非 completed 或 structured 缺失时回退文本解析。
-      debugLog(`runPushReview: start resolved (structured=${run.structured !== undefined}, stopReason=${run.stopReason ?? 'n/a'})`);
-      if (run.structured !== undefined) {
-        return formatReviewMessage(run.structured as PushReviewResult);
-      }
-      const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
-      if (text.trim()) {
-        const jsonStart = text.indexOf('{');
-        if (jsonStart >= 0) {
-          try {
-            const result = JSON.parse(text.slice(jsonStart)) as PushReviewResult;
-            return formatReviewMessage(result);
-          } catch (_) {
-            return `[Fact-Forcing Gate] Push security review (unparsed):\n${text.slice(0, 1200)}`;
-          }
+      }) as { result: Promise<{ output?: { type: string; text?: string }[]; stopReason?: string; structured?: unknown }>; dispose?: () => Promise<void> };
+      try {
+        const settled = await run.result;
+        // structured 优先: outputSchema 满足时 provider 返回校验过的 JSON。
+        // 旧路径保留: stopReason 非 completed 或 structured 缺失时回退文本解析。
+        debugLog(`runPushReview: child settled (structured=${settled.structured !== undefined}, stopReason=${settled.stopReason ?? 'n/a'})`);
+        if (settled.structured !== undefined) {
+          return formatReviewMessage(settled.structured as PushReviewResult);
         }
-        return `[Fact-Forcing Gate] Push security review:\n${text.slice(0, 1200)}`;
+        const text = settled.output?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
+        if (text.trim()) {
+          const jsonStart = text.indexOf('{');
+          if (jsonStart >= 0) {
+            try {
+              const result = JSON.parse(text.slice(jsonStart)) as PushReviewResult;
+              return formatReviewMessage(result);
+            } catch (_) {
+              return `[Fact-Forcing Gate] Push security review (unparsed):\n${text.slice(0, 1200)}`;
+            }
+          }
+          return `[Fact-Forcing Gate] Push security review:\n${text.slice(0, 1200)}`;
+        }
+        return null;
+      } finally {
+        void run.dispose?.().catch(() => {});
       }
-      return null;
     } catch (e) {
       debugLog(`runPushReview: subagents.start threw: ${String(e)}`);
       ctx.logger.warn(`[fact-gate] push review failed: ${String(e)}`);
