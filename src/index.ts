@@ -34,6 +34,10 @@ import type { PreToolDecision, PostToolDecision } from '@deepseek-ai/dsh-tools';
 import type { UserMessage, ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { randomUUID } from 'node:crypto';
+// TEMP diagnostics imports (removed after resume-attach triage)
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 import { decideGate, type GateContext } from './gates.ts';
 import { compileExemptGlobs, isGateGuardDisabled, isRoutineBashGateDisabled } from './detect-destructive.ts';
@@ -496,6 +500,16 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // apply time (guarded by a seen set).
   const attachedAgents = new Set<string>();
 
+  // TEMP diagnostics (removed after resume-attach triage): disk log under
+  // ~/.dsh/fact-gate/fact-gate-triage.log
+  function triageLog(message: string): void {
+    try {
+      const dir = process.env.FACT_GATE_STATE_DIR ?? join(homedir(), '.dsh', 'fact-gate');
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, 'fact-gate-triage.log'), `${Date.now()} ${message}\n`);
+    } catch { /* diagnostics only */ }
+  }
+
   function attachAgent(agent: unknown): void {
     const agentView = agent as {
       id: string;
@@ -505,6 +519,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     };
     if (!agentView?.id || attachedAgents.has(agentView.id)) return;
     attachedAgents.add(agentView.id);
+    triageLog(`attachAgent: ${agentView.id} (cwd=${agentView.session.header.cwd ?? '?'})`);
     // Per-agent project config refresh (session cwd may differ from process cwd).
     const agentCwd = agentView.session.header.cwd;
     if (agentCwd && agentCwd !== process.cwd()) {
@@ -536,9 +551,10 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
       ? (agentView.session.events[agentView.session.events.length - 1] as { seq?: number }).seq ?? 0
       : 0;
     const scanAndNotifyCompaction = (): void => {
-      if (!s().compactionNotice) return;
+      const enabled = s().compactionNotice;
       const events = agentView.session.events;
-      const found = scanCompactionStarts(events, lastCompactionScanSeq);
+      const found = enabled ? scanCompactionStarts(events, lastCompactionScanSeq) : [];
+      triageLog(`scan: enabled=${enabled} lastSeq=${lastCompactionScanSeq} eventsLen=${events.length} found=${found.length}`);
       if (found.length > 0) {
         lastCompactionScanSeq = found[found.length - 1]!;
         agentView.inject(createUserMessage({
@@ -560,6 +576,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   }
 
   ctx.on('agent/created', ({ agent }) => {
+    triageLog('event: agent/created');
     attachAgent(agent);
   });
 
@@ -573,6 +590,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // (runtime-types.ts:44), including the one that activates a resumed agent;
   // attachAgent's seen set makes repeated calls safe.
   ctx.on('agent/status', ({ agent }) => {
+    triageLog('event: agent/status');
     attachAgent(agent);
   });
 
@@ -587,6 +605,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // precedent).
   const agentsService = ctx.get('agents') as { list(): unknown[] } | undefined;
   if (agentsService && typeof agentsService.list === 'function') {
+    triageLog(`apply-time agents.list() = ${agentsService.list().length}`);
     for (const agent of agentsService.list()) attachAgent(agent);
   }
 
