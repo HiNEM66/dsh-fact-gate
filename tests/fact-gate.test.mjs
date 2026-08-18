@@ -376,8 +376,7 @@ describe('phase-2: push review', () => {
     assert.equal(isGitPushCommand('git status'), false)
     assert.equal(isGitPushCommand('ls'), false)
   })
-  it('detects git push inside run_code program text (lax carrier match)', async () => {
-    // Real-machine shape: CodeDispatchLog.exec is the outer run_code execution;
+  it('detects git push inside run_code program text (lax carrier match)', async () => {    // Real-machine shape: CodeDispatchLog.exec is the outer run_code execution;
     // the command is a tools.pwsh({ command: ... }) call inside the code program.
     const codeTpl = 'const safe = "-c safe.directory=D:/x";\nconst push = await tools.pwsh({ command: `git ${safe} push`, description: "Push to origin" });'
     assert.equal(isGitPushCommandLax(codeTpl), true)
@@ -392,6 +391,13 @@ describe('phase-2: push review', () => {
     assert.match(msg, /add ownership check/)
     const clean = formatReviewMessage({ vulns_found: 0, affected_files: [], findings: [] })
     assert.match(clean, /No vulnerabilities/)
+  })
+  it('uses only provider-supported JSON-schema keywords', async () => {
+    // The subagent provider rejects unsupported keywords (minimum) with
+    // JsonSchemaError, silently killing the review (real-machine debug log).
+    const { PUSH_REVIEW_SCHEMA } = await import('../lib/push-review.js')
+    const text = JSON.stringify(PUSH_REVIEW_SCHEMA)
+    assert.ok(!text.includes('minimum'), 'schema must not use minimum')
   })
 })
 

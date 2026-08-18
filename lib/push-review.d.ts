@@ -40,7 +40,6 @@ export declare const PUSH_REVIEW_SCHEMA: {
     readonly properties: {
         readonly vulns_found: {
             readonly type: "integer";
-            readonly minimum: 0;
         };
         readonly affected_files: {
             readonly type: "array";
