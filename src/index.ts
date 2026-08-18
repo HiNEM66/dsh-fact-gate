@@ -387,31 +387,70 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
       }
     }
 
-    // Phase-2: push security review — git push completed.
+    // Phase-2: push security review — git push completed (NATIVE mode:
+    // post-execute receives the pwsh exec directly).
     if (exec.name === 'pwsh' || exec.name === 'bash') {
       const command = (exec.arguments as Record<string, string> | undefined)?.command ?? '';
       if (!result.isError && isGitPushCommand(command) && gateEnabled()) {
-        // 触发条件: 仅当 stdout 含推送成功标志 (`->` 或 `new branch`) 才审查。
-        // 真机实测: agent 的重试脚本 (push 失败被吞但脚本 exit 0) 会被
-        // !result.isError 误判为成功 → 每次重试触发一个审查子代理白烧 token。
-        // 成功标志匹配: `Everything up-to-date` 无新内容不审; 脚本内失败无
-        // 成功行不审; 仅真实推送成功触发。
         const stdoutText = JSON.stringify(result) ?? '';
-        const pushSucceeded = /->/.test(stdoutText) || /new branch/.test(stdoutText);
-        if (pushSucceeded) {
-          // 按推送目标 HEAD 去重: 同一内容重试不重复审查, 新提交必审。
-          const targetHash = /([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})/.exec(stdoutText)?.[2] ?? '';
-          const key = `push:${targetHash}`;
-          if (!targetHash || reviewedPushHeads.get(sessionKey) !== key) {
-            reviewedPushHeads.set(sessionKey, key);
-            return runPushReview(exec).then(msg => (msg ? attachMessage(msg) : next()));
-          }
-        }
+        const triggered = maybePushReview(exec, stdoutText, exec.agent);
+        if (triggered) return next();
       }
     }
 
     return Promise.resolve(next());
   }, { prepend: true });
+
+  /**
+   * Shared push-review trigger (native post-execute AND code-mode
+   * code-dispatch-log paths). Detects a REAL successful push (stdout contains
+   * `->` or `new branch` — failed retry scripts never match), dedups by
+   * target HEAD, and starts the review subagent fire-and-forget.
+   * @returns true when a review was started (caller should not double-trigger).
+   */
+  function maybePushReview(exec: { agent?: unknown }, stdoutText: string, agentForInject: unknown): boolean {
+    if (!gateEnabled()) return false;
+    const pushSucceeded = /->/.test(stdoutText) || /new branch/.test(stdoutText);
+    if (!pushSucceeded) return false;
+    const targetHash = /([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})/.exec(stdoutText)?.[2] ?? '';
+    if (!targetHash) return true; // parse failure: trigger (never miss a review over dedup)
+    const sessionKey = resolveSessionKey(
+      (exec.agent as { id?: string } | undefined)?.id,
+      { FACT_GATE_SESSION_ID: process.env.FACT_GATE_SESSION_ID, FACT_GATE_PROJECT_DIR: process.env.FACT_GATE_PROJECT_DIR } as never,
+    );
+    const key = `push:${targetHash}`;
+    if (reviewedPushHeads.get(sessionKey) === key) return false; // same HEAD retry — skip
+    reviewedPushHeads.set(sessionKey, key);
+    // Fire-and-forget: the review runs async; results inject via the agent
+    // when available (code mode: agent.inject), else best-effort skip.
+    void runPushReview(exec).then(msg => {
+      if (!msg) return;
+      const agentView = agentForInject as { inject?(context: UserMessage): void } | undefined;
+      if (agentView?.inject) agentView.inject(createUserMessage({
+        content: [{ type: 'text', text: msg }],
+        source: { kind: 'plugin', plugin: 'fact-gate' },
+      }));
+    });
+    return true;
+  }
+
+  // ── CODE-MODE push review: run_code sub-dispatches never reach the plugin's
+  // post-execute (the code-mode driver digests nested post-execute internally,
+  // code-mode.ts:365-390). The `tools/code-dispatch-log` waterfall (index.ts:189)
+  // IS reachable and carries the sub-call's full rendered content — including
+  // the pwsh stdout with the `->` success marker (verified in session
+  // 505a06b3: content `0e3a287..3361171 test/push-review -> test/push-review`).
+  // Listener must stay non-blocking (it sits on the log-append path) — only
+  // detect + fire-and-forget, always `return next()`.
+  ctx.on('tools/code-dispatch-log', (dispatch, next) => {
+    if (dispatch.name !== 'pwsh' && dispatch.name !== 'bash') return next();
+    // 命令本体在 exec.arguments.command（content 是命令输出，不含 "git push"）。
+    const command = (dispatch.exec.arguments as Record<string, string> | undefined)?.command ?? '';
+    if (!isGitPushCommand(command)) return next();
+    const text = dispatch.content.map(b => (b as { text?: string }).text ?? '').join('\n');
+    maybePushReview(dispatch.exec, text, dispatch.agent);
+    return next();
+  });
 
   // ── Phase-3: cost warning + compaction hook + per-agent project config ──
   const costWarning = new CostWarningTracker(() => ({
