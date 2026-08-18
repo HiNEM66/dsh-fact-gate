@@ -499,6 +499,8 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // attachAgent() runs both on agent/created AND for already-live agents at
   // apply time (guarded by a seen set).
   const attachedAgents = new Set<string>();
+  // Registered by attachAgent; swept by the timer fallback below.
+  const compactionScanners = new Map<string, () => void>();
 
   // TEMP diagnostics (removed after resume-attach triage): disk log under
   // ~/.dsh/fact-gate/fact-gate-triage.log
@@ -573,6 +575,13 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     agentView.ctx.on('agent/turn-stopping', () => {
       scanAndNotifyCompaction();
     });
+    // Timer fallback sweep: a manual /compact completes over the command
+    // channel (command/done is a session event, not a reachable cordis event)
+    // and typically leaves zero following steps/turns — neither pre-step nor
+    // turn-stopping fires afterwards (real-machine session "测试5" seq 17658,
+    // 30346: compaction/start..end present, nothing after). Register the
+    // scanner so the global sweep below can pick up the notice.
+    compactionScanners.set(agentView.id, scanAndNotifyCompaction);
   }
 
   ctx.on('agent/created', ({ agent }) => {
@@ -607,6 +616,18 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   if (agentsService && typeof agentsService.list === 'function') {
     triageLog(`apply-time agents.list() = ${agentsService.list().length}`);
     for (const agent of agentsService.list()) attachAgent(agent);
+  }
+
+  // Compaction notice timer fallback: /compact completes over the command
+  // channel with no reachable completion event and usually no following
+  // step/turn — sweep the registered scanners on a timer when the timer
+  // service is present (base bundle timer row). Interval bounds notice
+  // latency; a scan is a cheap in-memory slice filter.
+  const timer = ctx.get('timer') as { setInterval?(fn: () => void, ms: number): unknown } | undefined;
+  if (timer && typeof timer.setInterval === 'function') {
+    timer.setInterval(() => {
+      for (const scan of compactionScanners.values()) scan();
+    }, 30_000);
   }
 
   // Mount log (fires once at apply — cordis has no typed 'ready' event in Events).
