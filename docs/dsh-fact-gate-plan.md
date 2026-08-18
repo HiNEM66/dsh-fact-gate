@@ -1,7 +1,7 @@
 # dsh-fact-gate 插件方案：在 DSH 上复刻 Claude Code 内置约束 + GateGuard 机制
 
-> 文档日期：2026-08-17
-> 状态：**方案评审稿（待用户评估确认后进入实现）**
+> 文档日期：2026-08-17（2026-08-18 更新：全部期次实现完成 + push 审查真机全链路验证通过）
+> 状态：**已实现并真机验证（2026-08-18）**——一期 4 门、二期（push 审查/范围告警/重复读）、三期（成本告警/项目配置/compaction 钩子）全部落地；push 审查经四层根因排查后真机全链路打通（详见 11.6）
 > 参考源：本仓库 docs/claude-code-constraints-and-gateguard.md（CC 机制文字还原）+ dsh 运行时源码 D:\Pycharm\PycharmProjects\deepseek-harness（rc.5，与 rc.6 API 一致）+ 本机 dsh-ecc 0.3.4 插件源码 + GateGuard 原始实现 ~/.claude/skills/everything-claude-code/scripts/hooks/gateguard-fact-force.js（1278 行）与 shell-substitution.js
 > 已确认决策：① 独立插件（非扩展 dsh-ecc）② 默认 deny（hooksDeny 语义）③ 一期 4 门全做 ④ 可行性评估先行（本文第 4 章）⑤ sub-agent 豁免采用方案 A（全局监听 + exec.agent 判定）
 
@@ -519,16 +519,17 @@ tools/pre-execute (index.ts:152)
 |---|---|---|
 | 范围告警 | scope-warning.ts | 会话内 N 文件（默认 20）→ SCOPE WARNING，每会话一次 |
 | 重复读软化 | duplicate-read.ts | 默认 OFF；未变更重读 → 'File unchanged' 提示（不 deny） |
-| push 安全审查 | push-review.ts | git push 成功 → 子代理审查（认证/IDOR/密钥/SQL/泄漏/SSRF）→ JSON 报告注入；失败降级 |
+| push 安全审查 | push-review.ts | git push 成功 → 子代理审查（认证/IDOR/密钥/SQL/泄漏/SSRF）→ JSON 报告注入；失败降级。**双路径触发**：native 模式 `tools/post-execute` + code mode `tools/code-dispatch-log`（真机验证，见 11.6） |
 | run_code 检测 | run-code-advisory.ts | 一期已做（危险 API → advisory context） |
 
-**设计约束**：`inject` 增加 `subagents`（cordis 注入，保持零运行时 @deepseek-ai 依赖原则——避免一期坑 #4 复发）。
+**设计约束**：`subagents` 兄弟 entry 服务走 `ctx.get()` 非严格读（strict 读抛 without inject；声明 inject 会让插件在无该服务的 profile PENDING 卡死）；`subagents.start()` 返回 `SubagentRun` 句柄，结果在 `run.result: Promise<SubagentResult>`（dsh-subagent types.ts:204），结束 `run.dispose()`。
 
 ### 11.3 测试与验证
 
-- 47/47 单测全绿（检测 5 层 + pwsh cmdlet + 状态机 + 预算 + 豁免 + 工具映射 + 四门 + 告警 + 二期三模块）
+- **54/54 单测全绿**（检测 5 层 + pwsh cmdlet + 状态机 + 预算 + 豁免 + 工具映射 + 四门 + 告警 + 二期三模块 + push 命令匹配 + schema 关键字守护 + compaction 扫描）
 - headless 真机：Write 门拦截（4 事实）、破坏性门拦截（rm + Remove-Item，目标/回滚/指令）、routine 门、DENY→FORCE→ALLOW 闭环
-- GitHub: `github.com/HiNEM66/dsh-fact-gate`（9 commits）
+- **web profile 真机（2026-08-18）**：门禁全链路 + push 安全审查双路径触发 + 子代理 structured_output 收敛 + 注入消息（两次 push 各审一次，第二次审出 4 个问题）
+- GitHub: `github.com/HiNEM66/dsh-fact-gate`（master 最新）
 
 ### 11.4 三期 — ✅ 已完成
 
@@ -536,17 +537,30 @@ tools/pre-execute (index.ts:152)
 |---|---|---|
 | 成本告警 | cost-warning.ts | session/event 的 assistant/message.usage 累加（usage 随消息同行，types.ts:265-273）→ 超阈值（默认 1M tokens）注入 COST WARNING，每超一次告警 |
 | 项目配置 | project-config.ts | `.fact-gate.yml` 项目级配置（GateGuard `gateguard init` 对应物）；process.cwd() 加载 + agent/created 按会话 cwd 刷新；已知键合并覆盖 settings |
-| compaction 钩子 | index.ts | `compaction/start` 事件（dsh 的 PreCompact 等价物）→ 压缩前注入"记录必须保留内容"提示 |
+| compaction 钩子 | compaction.ts + index.ts | **压缩后通知**（Claude Code PreCompact 的可达等价）：`agent/pre-step` 监听器增量扫描 `agent.session.events` 发现新 `compaction/start` → 注入 "context was compacted" 通知。`compaction/start` 是 session.append 写入事件流（compaction-basic region.ts:189），非 cordis 事件发射——"压缩前动作钩子"在 dsh 无可靠信号（压缩决策在 pre-step 监听器内部，无预告事件）；压缩后通知是可达的最大等价物。默认 OFF（compactionNotice） |
 
 **平台限制（文档化）**：文件外部变更通知（CC was-modified）——dsh 无内置文件 watcher，自建成本高误报风险大，不实现。
 
-**验证**：51/51 单测全绿 + headless 真机加载正常 + 运行时零 @deepseek-ai 依赖保持（yaml 为非 @deepseek-ai 依赖，无副本风险）。
+**验证**：54/54 单测全绿 + web profile 真机加载正常 + 运行时零 @deepseek-ai 依赖保持（yaml 为非 @deepseek-ai 依赖，无副本风险）。
 
 ### 11.5 期次规划
 
 | 期 | 内容 | 状态 |
 |---|---|---|
 | 一期 | 4 门 + 状态机 + run_code 告警 | ✅ |
-| 二期 | 范围告警 + 重复读 + push 审查 | ✅ |
-| 三期 | 成本告警 + 项目配置 + compaction 钩子 | ✅ |
+| 二期 | 范围告警 + 重复读 + push 审查 | ✅（push 审查 2026-08-18 真机全链路验证） |
+| 三期 | 成本告警 + 项目配置 + compaction 钩子 | ✅（compaction 2026-08-18 以 agent/pre-step 扫描方案落地） |
 | 四期（视需求） | 进程外子代理语义对齐 / run_code 全语义检测 / 市场发布与文档站点 / 与 dsh-mnemon 深度集成 | ⏳ 待定 |
+
+### 11.6 push 审查真机排查记录（2026-08-18，四层根因）
+
+web profile 真机测试中 push 审查不触发，逐层排查定位四层独立根因（均已修复并验证）：
+
+| 层 | 根因 | 修复 |
+|---|---|---|
+| 1 | **code mode 命令载体错位**：`CodeDispatchLog.exec` 是外层 run_code 执行（arguments = {code, description}），插件读 `exec.arguments.command` 恒 undefined（会话日志里序列化的 arguments.command 是内层参数副本，误导排查方向） | 命令来源改 `exec.arguments.code`（内层调用以 `tools.pwsh({command: \`git ${...} push\`})` 存在于 code 程序）+ 新增按行宽松匹配 `isGitPushCommandLax`（模板变量无法静态展开，误报由 `->` 成功标志兜底） |
+| 2 | **PUSH_REVIEW_SCHEMA 的 `minimum` 关键字不被 provider 支持**：subagents.start 抛 JsonSchemaError（支持子集：type/oneOf/properties/required/additionalProperties/items/enum/const + annotations） | 移除 `vulns_found.minimum`；守护测试断言 schema 不再含 unsupported 关键字 |
+| 3 | **start 结果读取协议错误**：`subagents.start()` 返回 `SubagentRun` 句柄（{id, localAgent, result, dispose}），结果在 `run.result: Promise<SubagentResult>` 异步 settle；插件直接读 `run.output/run.structured/run.stopReason` 全是 undefined → 判空返回 → 无注入，子代理孤跑 | `await run.result` 拿 SubagentResult（{output, stopReason, structured?}），finally `run.dispose()` |
+| 支撑 | **插件日志真机无痕**：harness 未挂 console exporter，logger 只进内存 buffer——排查期间所有静默失败路径不可见 | 临时磁盘诊断日志（`<stateDir>/fact-gate-debug.log`，排查完成后移除，插件保持零额外日志） |
+
+**排查方法论沉淀**：① 真机与本地复现的差异可能藏在"事件对象形状"（复现用伪造 dispatch 带 arguments.command，真机是 run_code 载体——形状不一致误导验证）；② 静默失败路径必须有可观测性（磁盘日志一轮定位）；③ 类型文档是协议（SubagentResult "resolved by SubagentRun.result" 原文）——读 API 文档先于猜字段。
