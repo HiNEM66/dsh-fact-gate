@@ -592,8 +592,9 @@ export function compileExtraRegexes(sources: string[]): RegExp[] {
   return out;
 }
 
+/** True when the routine Bash gate is disabled by env (`FACT_GATE_ROUTINE_BASH=off`). */
 export function isRoutineBashGateDisabled(value: string | undefined): boolean {
-  return ECC_ENABLE_VALUES.has(String(value || '').trim().toLowerCase());
+  return ECC_DISABLE_VALUES.has(String(value || '').trim().toLowerCase());
 }
 
 export function isGateGuardDisabled(value: string | undefined, disableValues: Set<string> = ECC_DISABLE_VALUES): boolean {

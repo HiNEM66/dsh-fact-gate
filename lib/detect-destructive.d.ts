@@ -27,5 +27,6 @@ export declare function isExemptPath(filePath: string, matchers: RegExp[]): bool
 export declare function isDestructiveBash(command: string, config: DetectorConfig): boolean;
 /** Compile operator extra destructive regexes (case-insensitive, fail-open). */
 export declare function compileExtraRegexes(sources: string[]): RegExp[];
+/** True when the routine Bash gate is disabled by env (`FACT_GATE_ROUTINE_BASH=off`). */
 export declare function isRoutineBashGateDisabled(value: string | undefined): boolean;
 export declare function isGateGuardDisabled(value: string | undefined, disableValues?: Set<string>): boolean;

@@ -50,7 +50,7 @@ Fact-Forcing Gate for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 - **状态机**：`~/.dsh/fact-gate/state-<sessionKey>.json`（按 agent.id 哈希）；500 checked 条目 / 50 会话键 / 30 分钟超时 / 临时文件 + rename 原子写 / 过期文件清理
 - **Denial 预算**：前 3 次拦截输出完整四事实块，之后压缩单行（带序号 + 恢复提示），防上下文膨胀
 - **豁免**：只读 git 内省（status/diff/log/show/branch/rev-parse）、settings 路径、`exemptGlobs`（支持 `**`）、子代理调用（`delegationDepthOf > 0`）
-- **逃生**：`FACT_GATE=off` 完全禁用；settings `enabled:false` / `profile:none` / 按门 `enabledHooks`；`FACT_GATE_ROUTINE_BASH=off` 关 routine 门
+- **逃生**：`FACT_GATE=off` 完全禁用；settings `enabled:false` / `profile:none` / 按门 `enabledHooks`；`FACT_GATE_ROUTINE_BASH=off` 关 routine 门；`FACT_GATE_DISABLED_HOOKS`（逗号分隔 hook id，如 `pre:edit-write:fact-gate` / `pre:bash:fact-gate`，或裸门名 `edit`/`write`/`destructive-bash`/`routine-bash`）按门禁用
 - **warn-only 模式**：`deny:false` 时命中门不拦截，改为 post-execute 附加 context 告警
 - **settings live 重载**：settings.yaml 修改即时生效（`applies:'live'`）
 

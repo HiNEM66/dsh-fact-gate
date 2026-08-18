@@ -36,7 +36,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { randomUUID } from 'node:crypto';
 
 import { decideGate, type GateContext } from './gates.ts';
-import { compileExemptGlobs, isGateGuardDisabled } from './detect-destructive.ts';
+import { compileExemptGlobs, isGateGuardDisabled, isRoutineBashGateDisabled } from './detect-destructive.ts';
 import { FactGateStateStore, resolveSessionKey, getFullDenialBudget } from './state.ts';
 import { withRecoveryHint, EDIT_WRITE_HOOK_ID, BASH_HOOK_ID } from './messages.ts';
 import { scanDangerApis, dangerAdvisoryMessage } from './run-code-advisory.ts';
@@ -145,12 +145,25 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // Per-call warn-mode bookkeeping (warnOnly gate hits → attach at post-execute).
   const pendingWarns = new Map<string, string>();
 
+  // Env escape hatches matching the recovery hints (messages.ts withRecoveryHint):
+  //   FACT_GATE_DISABLED_HOOKS — comma-separated hook ids (`pre:edit-write:fact-gate`,
+  //   `pre:bash:fact-gate`) or bare gate names (`edit`, `write`, `destructive-bash`,
+  //   `routine-bash`); listed hooks are treated as disabled regardless of settings.
+  //   FACT_GATE_ROUTINE_BASH=off — disables the routine Bash gate (README 逃生).
+  const disabledHookIds = new Set(
+    String(process.env.FACT_GATE_DISABLED_HOOKS ?? '').split(',').map(s => s.trim()).filter(Boolean),
+  );
+
   function gateEnabled(): boolean {
     if (isGateGuardDisabled(process.env.FACT_GATE)) return false;
     return s().enabled && s().profile !== 'none';
   }
 
   function hookEnabled(hook: FactGateHook): boolean {
+    if (isGateGuardDisabled(process.env.FACT_GATE)) return false;
+    if (disabledHookIds.has(hook)) return false;
+    const hookId = hook === 'edit' || hook === 'write' ? EDIT_WRITE_HOOK_ID : BASH_HOOK_ID;
+    if (disabledHookIds.has(hookId)) return false;
     return s().enabledHooks.includes(hook);
   }
 
@@ -221,7 +234,9 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     // and routine gate are each controlled by their own enabledHooks entry
     // (a gate whose hook is off is skipped, the other still fires).
     if (SHELL_TOOLS.has(toolName)) {
-      const routineHook = hookEnabled('routine-bash') && cfg.routineBashEnabled;
+      const routineHook = hookEnabled('routine-bash')
+        && cfg.routineBashEnabled
+        && !isRoutineBashGateDisabled(process.env.FACT_GATE_ROUTINE_BASH);
       const destructiveHook = hookEnabled('destructive-bash');
       if (!routineHook && !destructiveHook) return Promise.resolve(next());
       const decision = decideGate(
