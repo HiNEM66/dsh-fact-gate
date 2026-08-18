@@ -73,24 +73,37 @@ grep -c "await run.result" "C:\Users\<用户>\.dsh\profiles\web\node_modules\dsh
 
 ## 配置（`~/.dsh/settings.yaml`，live 重载）
 
+### 设置方式（三层，优先级从低到高）
+
+| 层 | 文件 | 优先级 | 生效方式 |
+|---|---|---|---|
+| 用户级（主要） | `~/.dsh/settings.yaml` 的 `fact-gate:` section | 低 | **live 即时生效**（改完不用重启） |
+| 项目级 | `<项目根>/.fact-gate.yml` | 高（覆盖用户级） | 按会话 cwd 动态刷新 |
+| 环境变量（逃生） | 进程环境（如 `FACT_GATE=off`） | 最高 | 启动时读取 |
+
 ```yaml
 fact-gate:
+  # ── 核心防护（默认全开，无需配置）──
   enabled: true            # 总开关（env FACT_GATE=off 也生效）
   deny: true               # false = warn-only（附加 context 不拦截）
   profile: full            # 'none' = 关闭
+  pushReviewEnabled: true  # push 安全审查
+  runCodeAdvisory: true    # run_code 危险 API 告警
+  scopeWarningThreshold: 20  # 范围告警阈值（0 = 关）
+
+  # ── 辅助功能（按需开启）──
+  duplicateRead: false     # 重复读软化（默认关：改变 read 行为，见"默认值设计理由"）
+  compactionNotice: false  # 压缩后注入通知（默认关：注入消息消耗上下文）
+  costWarningThreshold: 1000000  # 成本告警阈值（0 = 关，调低更敏感）
+
+  # ── 门禁细调 ──
   fullDenials: 3           # 全块拦截预算，之后压缩单行
   exemptGlobs: []          # 豁免路径 glob（** 跨段）
   bashExtraDestructive: [] # 自定义破坏性正则（层 2）
   routineBashEnabled: true # false = 关 routine 门（destructive 仍生效）
-  enabledHooks: [edit, write, destructive-bash, routine-bash]
-  runCodeAdvisory: true    # run_code 危险 API 告警
-  scopeWarningThreshold: 20  # 范围告警阈值（0 = 关）
-  duplicateRead: false     # 重复读软化（默认关）
-  pushReviewEnabled: true  # push 安全审查
+  enabledHooks: [edit, write, destructive-bash, routine-bash]  # 按门禁用
   pushReviewProvider: ''   # 子代理 provider（空 = 第一个注册的）
   pushReviewMaxCommits: 5
-  costWarningThreshold: 1000000  # 会话 token 告警阈值（0 = 关）
-  compactionNotice: false  # 压缩后注入通知（agent/pre-step + turn-stopping + timer 扫描 session 事件流）
 ```
 
 **项目级配置**（`<项目根>/.fact-gate.yml`，覆盖用户 settings）：
