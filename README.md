@@ -33,7 +33,7 @@ Fact-Forcing Gate for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 | 功能 | 行为 |
 |---|---|
 | 范围告警 | 会话内编辑 N 文件（默认 20）→ `SCOPE WARNING` 注入，每会话一次 |
-| push 安全审查 | `git push` 成功后委派子代理审查（认证/IDOR/硬编码密钥/SQL 注入/资源泄漏/SSRF，"不得仅因内部服务而 dismiss"）→ 结构化 JSON 报告注入；失败降级不阻塞 |
+| push 安全审查 | `git push` 成功后委派子代理审查（认证/IDOR/硬编码密钥/SQL 注入/资源泄漏/SSRF，"不得仅因内部服务而 dismiss"）→ 结构化 JSON 报告注入；失败降级不阻塞。**双路径触发**：native 模式走 `tools/post-execute`，code mode 走 `tools/code-dispatch-log`（命令载体在 `run_code` 的 `code` 参数，宽松匹配 + `->` 成功标志兜底）。真机验证通过（2026-08-18） |
 | 重复读软化（默认 OFF） | 未变更文件重读 → `File unchanged since your last Read` 提示（不 deny——read 工具契约） |
 | run_code 告警 | 代码含危险 API（fs.unlink/child_process/process.kill 等）→ advisory context（不 deny） |
 
@@ -125,7 +125,7 @@ src/
 | 注入消息形状 | `createUserMessage({content: ContentBlock[], source})` | packages/llm/llm/src/message.ts:192（内联） |
 | settings live | `ctx.settings.register(NS, Schema, {applies:'live'})` | packages/settings/settings/src/index.ts:435 |
 | 子代理豁免 | `delegationDepthOf(exec.agent) > 0` | packages/subagent/subagent/src/depth.ts:28-36（内联） |
-| push 审查委派 | `ctx.subagents.start(provider, request)` | packages/subagent（inject 注入） |
+| push 审查委派 | `ctx.get('subagents')`（非严格读，兄弟 entry 容错）→ `subagents.start(provider, request)` 返回 `SubagentRun` 句柄，结果在 `run.result: Promise<SubagentResult>`（structured/文本双通道），结束 `run.dispose()` | packages/subagent（subagent/subagent-in-process-driver/src/index.ts:102） |
 | token usage | `assistant/message.usage`（store 作用域，插件不可达——成本告警用 turn 估算降级） | packages/core/session/src/types.ts:265-273 |
 | 压缩前事件 | `compaction/start` session event（store 作用域，插件不可达——未接线） | packages/compaction/compaction-basic/src/region.ts:189 |
 
@@ -205,7 +205,7 @@ npm run build     # tsc → lib/
 | 期 | 内容 | 状态 |
 |---|---|---|
 | 一期 | 4 门 + 状态机 + run_code 告警 | ✅ |
-| 二期 | 范围告警 + 重复读 + push 审查 | ✅ |
+| 二期 | 范围告警 + 重复读 + push 审查 | ✅（push 审查 2026-08-18 真机验证：双路径触发 + 子代理结构化产出 + 注入，见排查记录） |
 | 三期 | 成本告警（turn 估算）+ 项目配置 + compaction 钩子（⚠️ 平台限制，未接线） | ⚠️ |
 | 四期（待定） | 进程外子代理语义对齐 / run_code 全语义检测 / 市场发布与文档站点 / 与 dsh-mnemon 深度集成 | ⏳ 视需求 |
 
