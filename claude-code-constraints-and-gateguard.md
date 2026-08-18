@@ -1,4 +1,3 @@
----
 # Claude Code 内置约束 与 GateGuard（Fact-Forcing Gate）机制详解
 
 > 文档日期：2026-08-17
