@@ -1,7 +1,7 @@
 # dsh-fact-gate 插件方案：在 DSH 上复刻 Claude Code 内置约束 + GateGuard 机制
 
-> 文档日期：2026-08-17（2026-08-18 更新：全部期次实现完成 + push 审查真机全链路验证通过）
-> 状态：**已实现并真机验证（2026-08-18）**——一期 4 门、二期（push 审查/范围告警/重复读）、三期（成本告警/项目配置/compaction 钩子）全部落地；push 审查经四层根因排查后真机全链路打通（详见 11.6）
+> 文档日期：2026-08-17（2026-08-18 更新：全部期次实现完成 + push 审查与 compaction 钩子真机验证通过）
+> 状态：**已实现并真机验证（2026-08-18）**——一期 4 门、二期（push 审查/范围告警/重复读）、三期（成本告警/项目配置/compaction 钩子）全部落地；push 审查经四层根因排查后真机全链路打通（详见 11.6），compaction 钩子经扫描点演进（pre-step → +turn-stopping → +timer 兜底）后真机注入验证通过
 > 参考源：本仓库 docs/claude-code-constraints-and-gateguard.md（CC 机制文字还原）+ dsh 运行时源码 D:\Pycharm\PycharmProjects\deepseek-harness（rc.5，与 rc.6 API 一致）+ 本机 dsh-ecc 0.3.4 插件源码 + GateGuard 原始实现 ~/.claude/skills/everything-claude-code/scripts/hooks/gateguard-fact-force.js（1278 行）与 shell-substitution.js
 > 已确认决策：① 独立插件（非扩展 dsh-ecc）② 默认 deny（hooksDeny 语义）③ 一期 4 门全做 ④ 可行性评估先行（本文第 4 章）⑤ sub-agent 豁免采用方案 A（全局监听 + exec.agent 判定）
 
@@ -537,7 +537,7 @@ tools/pre-execute (index.ts:152)
 |---|---|---|
 | 成本告警 | cost-warning.ts | session/event 的 assistant/message.usage 累加（usage 随消息同行，types.ts:265-273）→ 超阈值（默认 1M tokens）注入 COST WARNING，每超一次告警 |
 | 项目配置 | project-config.ts | `.fact-gate.yml` 项目级配置（GateGuard `gateguard init` 对应物）；process.cwd() 加载 + agent/created 按会话 cwd 刷新；已知键合并覆盖 settings |
-| compaction 钩子 | compaction.ts + index.ts | **压缩后通知**（Claude Code PreCompact 的可达等价）：`agent/pre-step` 监听器增量扫描 `agent.session.events` 发现新 `compaction/start` → 注入 "context was compacted" 通知。`compaction/start` 是 session.append 写入事件流（compaction-basic region.ts:189），非 cordis 事件发射——"压缩前动作钩子"在 dsh 无可靠信号（压缩决策在 pre-step 监听器内部，无预告事件）；压缩后通知是可达的最大等价物。默认 OFF（compactionNotice） |
+| compaction 钩子 | compaction.ts + index.ts | **压缩后通知**（Claude Code PreCompact 的可达等价）：增量扫描 `agent.session.events` 发现新 `compaction/start` → 注入 "context was compacted" 通知。三个扫描点：`agent/pre-step`（waterfall，必须 next()）+ `agent/turn-stopping` + **timer 兜底**（30s 轮询所有 attached agent）——`/compact` 经 command 通道完成（command/done 是 session 事件非 cordis 事件），通常无后续 step/turn，前两扫描点不触发（真机测试5 实证），timer 保证 ≤30s 注入。`compaction/start` 是 session.append 写入事件流（compaction-basic region.ts:189）——"压缩前动作钩子"在 dsh 无可靠信号（压缩决策在 pre-step 监听器内部，无预告事件）；压缩后通知是可达的最大等价物。默认 OFF（compactionNotice） |
 
 **平台限制（文档化）**：文件外部变更通知（CC was-modified）——dsh 无内置文件 watcher，自建成本高误报风险大，不实现。
 
