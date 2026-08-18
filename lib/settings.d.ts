@@ -40,10 +40,12 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     /** Session token threshold for COST WARNING (0 = off). */
     costWarningThreshold: Schema<number, number>;
     /**
-     * Inject a notice when the session context is compacted (compaction/start).
-     * NOTE: compaction/start is dispatched on the session STORE scope, which a
-     * plugin fiber cannot listen to (index.ts 附注) — this setting is reserved
-     * for a future reachable event; default OFF until then.
+     * Inject a notice when the session context is compacted (Claude Code
+     * PreCompact equivalent). Implemented via agent/pre-step + incremental
+     * scan of agent.session.events for compaction/start records (the event is
+     * appended to the session stream, not emitted on a reachable cordis
+     * event — compaction-basic/src/region.ts:189; the backend itself triggers
+     * inside an agent/pre-step listener, index.ts:147). Default OFF.
      */
     compactionNotice: Schema<boolean, boolean>;
 }>, Schemastery.ObjectT<{
@@ -76,10 +78,12 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     /** Session token threshold for COST WARNING (0 = off). */
     costWarningThreshold: Schema<number, number>;
     /**
-     * Inject a notice when the session context is compacted (compaction/start).
-     * NOTE: compaction/start is dispatched on the session STORE scope, which a
-     * plugin fiber cannot listen to (index.ts 附注) — this setting is reserved
-     * for a future reachable event; default OFF until then.
+     * Inject a notice when the session context is compacted (Claude Code
+     * PreCompact equivalent). Implemented via agent/pre-step + incremental
+     * scan of agent.session.events for compaction/start records (the event is
+     * appended to the session stream, not emitted on a reachable cordis
+     * event — compaction-basic/src/region.ts:189; the backend itself triggers
+     * inside an agent/pre-step listener, index.ts:147). Default OFF.
      */
     compactionNotice: Schema<boolean, boolean>;
 }>>;

@@ -44,6 +44,7 @@ import { ScopeWarningTracker } from './scope-warning.ts';
 import { DuplicateReadTracker } from './duplicate-read.ts';
 import { CostWarningTracker, type TokenUsageLike } from './cost-warning.ts';
 import { loadProjectConfig, mergeProjectConfig } from './project-config.ts';
+import { scanCompactionStarts, COMPACTION_NOTICE } from './compaction.ts';
 import { isGitPushCommand, isGitPushCommandLax, PUSH_REVIEW_PROMPT, PUSH_REVIEW_SCHEMA, formatReviewMessage, type PushReviewResult } from './push-review.ts';
 import { FACT_GATE_NS, FactGateSettings, FACT_GATE_HOOKS, type FactGateHook, type FactGateSettingsValue } from './settings.ts';
 
@@ -498,7 +499,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   function attachAgent(agent: unknown): void {
     const agentView = agent as {
       id: string;
-      session: { header: { cwd?: string; delegationDepth?: number } };
+      session: { header: { cwd?: string; delegationDepth?: number }; events: { seq: number; type: string }[] };
       inject(context: UserMessage): void;
       ctx: Context;
     };
@@ -523,9 +524,32 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         }));
       }
     });
-    // Compaction notice: compaction/start lives in the same store-scoped
-    // session stream — not reachable from a plugin (platform limit). Kept as
-    // a documented TODO for when dsh exposes a reachable pre-compaction event.
+    // Compaction notice via agent/pre-step + session event scan: compaction/start
+    // is appended to the session event stream (compaction-basic region.ts:189),
+    // not emitted on a cordis event a plugin fiber can listen to; the automatic
+    // compaction backend itself triggers inside an agent/pre-step listener
+    // (compaction-basic index.ts:147), so a pre-step listener here incrementally
+    // scans agent.session.events for new compaction/start records and injects a
+    // notice — the reachable equivalent of Claude Code's PreCompact hook.
+    let lastCompactionScanSeq = agentView.session.events.length > 0
+      ? (agentView.session.events[agentView.session.events.length - 1] as { seq?: number }).seq ?? 0
+      : 0;
+    // pre-step is a waterfall event — MUST return next() to keep the chain
+    // (the compaction backend itself listens on agent/pre-step).
+    agentView.ctx.on('agent/pre-step', (_context, next) => {
+      if (s().compactionNotice) {
+        const events = agentView.session.events;
+        const found = scanCompactionStarts(events, lastCompactionScanSeq);
+        if (found.length > 0) {
+          lastCompactionScanSeq = found[found.length - 1]!;
+          agentView.inject(createUserMessage({
+            content: [{ type: 'text', text: COMPACTION_NOTICE }],
+            source: { kind: 'plugin', plugin: 'fact-gate' },
+          }));
+        }
+      }
+      return next();
+    });
   }
 
   ctx.on('agent/created', ({ agent }) => {

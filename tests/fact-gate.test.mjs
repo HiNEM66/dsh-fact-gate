@@ -447,3 +447,21 @@ describe('phase-3: project config', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+// ── 12. Phase-3: compaction notice scanning ──
+describe('phase-3: compaction notice', () => {
+  it('scans session events for new compaction/start records', async () => {
+    const { scanCompactionStarts } = await import('../lib/compaction.js')
+    const events = [
+      { seq: 1, type: 'user/message' },
+      { seq: 2, type: 'assistant/message' },
+      { seq: 3, type: 'compaction/start' },
+      { seq: 4, type: 'user/message' },
+      { seq: 5, type: 'compaction/start' },
+    ]
+    assert.deepEqual(scanCompactionStarts(events, 0), [3, 5])
+    assert.deepEqual(scanCompactionStarts(events, 3), [5])
+    assert.deepEqual(scanCompactionStarts(events, 5), [])
+    assert.deepEqual(scanCompactionStarts([], 0), [])
+  })
+})
