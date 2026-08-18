@@ -29,4 +29,44 @@ export interface PushReviewResult {
     affected_files: string[];
     findings: PushFinding[];
 }
+/**
+ * outputSchema for the review subagent (dsh-subagent structured runtime):
+ * the child must call the structured_output tool with arguments matching
+ * this schema; the provider validates and returns it as `run.structured`.
+ */
+export declare const PUSH_REVIEW_SCHEMA: {
+    readonly type: "object";
+    readonly properties: {
+        readonly vulns_found: {
+            readonly type: "integer";
+            readonly minimum: 0;
+        };
+        readonly affected_files: {
+            readonly type: "array";
+            readonly items: {
+                readonly type: "string";
+            };
+        };
+        readonly findings: {
+            readonly type: "array";
+            readonly items: {
+                readonly type: "object";
+                readonly properties: {
+                    readonly severity: {
+                        readonly type: "string";
+                        readonly enum: readonly ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+                    };
+                    readonly issue: {
+                        readonly type: "string";
+                    };
+                    readonly suggested_fix: {
+                        readonly type: "string";
+                    };
+                };
+                readonly required: readonly ["severity", "issue", "suggested_fix"];
+            };
+        };
+    };
+    readonly required: readonly ["vulns_found", "affected_files", "findings"];
+};
 export declare function formatReviewMessage(result: PushReviewResult): string;

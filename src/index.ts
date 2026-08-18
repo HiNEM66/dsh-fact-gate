@@ -44,7 +44,7 @@ import { ScopeWarningTracker } from './scope-warning.ts';
 import { DuplicateReadTracker } from './duplicate-read.ts';
 import { CostWarningTracker, type TokenUsageLike } from './cost-warning.ts';
 import { loadProjectConfig, mergeProjectConfig } from './project-config.ts';
-import { isGitPushCommand, PUSH_REVIEW_PROMPT, formatReviewMessage, type PushReviewResult } from './push-review.ts';
+import { isGitPushCommand, PUSH_REVIEW_PROMPT, PUSH_REVIEW_SCHEMA, formatReviewMessage, type PushReviewResult } from './push-review.ts';
 import { FACT_GATE_NS, FactGateSettings, FACT_GATE_HOOKS, type FactGateHook, type FactGateSettingsValue } from './settings.ts';
 
 // cordis service augmentation: ctx.settings is provided by the harness
@@ -144,6 +144,10 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
 
   // Per-call warn-mode bookkeeping (warnOnly gate hits → attach at post-execute).
   const pendingWarns = new Map<string, string>();
+
+  // Push review dedup: sessionKey → last-reviewed push target HEAD (new-commit
+  // pushes always review; identical retries skip — see post-execute).
+  const reviewedPushHeads = new Map<string, string>();
 
   // Env escape hatches matching the recovery hints (messages.ts withRecoveryHint):
   //   FACT_GATE_DISABLED_HOOKS — comma-separated hook ids (`pre:edit-write:fact-gate`,
@@ -312,12 +316,21 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
         parent: parent as never,
         signal: new AbortController().signal,
-        // 真机实测: 4000 maxTokens 太小 — 审查子代理被 max-tokens 截断零产出
-        // (session-33d47ae9 子代理日志: turn/end reason=max-tokens)。
-        // 32000 单步输出上限: 容纳继承自父会话的 high reasoning + diff 输出;
-        // 配合 PUSH_REVIEW_PROMPT 的"只审 diff 不读仓库"约束, 步骤收敛 2-4 步。
-        agentOptions: { maxTokens: 32000 },
-      }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string };
+        // outputSchema: 结构化子代理 (dsh-subagent structured.ts) — 注册
+        // structured_output 工具 + 强制指令 "Do not finish with a plain text
+        // answer: only the tool call counts", 调用即 concludeTurn() + capture
+        // 后 guard 屏蔽其他工具 → 必然产出经 schema 校验的 JSON, 不再发散。
+        // maxTokens 不传: 子代理继承父会话 256k (child-agent.ts), 显式传值
+        // 反而钳制 (serialize.ts: maxTokens undefined = 不发送 max_tokens);
+        // 收敛由 outputSchema 保证, 无需数值兜底。
+        outputSchema: PUSH_REVIEW_SCHEMA,
+        agentOptions: {},
+      }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string; structured?: unknown };
+      // structured 优先: outputSchema 满足时 provider 返回校验过的 JSON。
+      // 旧路径保留: stopReason 非 completed 或 structured 缺失时回退文本解析。
+      if (run.structured !== undefined) {
+        return formatReviewMessage(run.structured as PushReviewResult);
+      }
       const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
       if (text.trim()) {
         const jsonStart = text.indexOf('{');
@@ -378,7 +391,22 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     if (exec.name === 'pwsh' || exec.name === 'bash') {
       const command = (exec.arguments as Record<string, string> | undefined)?.command ?? '';
       if (!result.isError && isGitPushCommand(command) && gateEnabled()) {
-        return runPushReview(exec).then(msg => (msg ? attachMessage(msg) : next()));
+        // 触发条件: 仅当 stdout 含推送成功标志 (`->` 或 `new branch`) 才审查。
+        // 真机实测: agent 的重试脚本 (push 失败被吞但脚本 exit 0) 会被
+        // !result.isError 误判为成功 → 每次重试触发一个审查子代理白烧 token。
+        // 成功标志匹配: `Everything up-to-date` 无新内容不审; 脚本内失败无
+        // 成功行不审; 仅真实推送成功触发。
+        const stdoutText = JSON.stringify(result) ?? '';
+        const pushSucceeded = /->/.test(stdoutText) || /new branch/.test(stdoutText);
+        if (pushSucceeded) {
+          // 按推送目标 HEAD 去重: 同一内容重试不重复审查, 新提交必审。
+          const targetHash = /([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})/.exec(stdoutText)?.[2] ?? '';
+          const key = `push:${targetHash}`;
+          if (!targetHash || reviewedPushHeads.get(sessionKey) !== key) {
+            reviewedPushHeads.set(sessionKey, key);
+            return runPushReview(exec).then(msg => (msg ? attachMessage(msg) : next()));
+          }
+        }
       }
     }
 
