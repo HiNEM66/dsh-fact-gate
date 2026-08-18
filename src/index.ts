@@ -55,25 +55,16 @@ declare module '@deepseek-ai/cordis' {
     settings: {
       register<T>(ns: string, schema: Schema<T>, options?: { applies?: 'live' | 'restart' }): { get(): T };
     };
-    /** Subagent runtime (dsh-base provides it); injected, never imported. */
-    subagents: {
-      list(): string[];
-      getProvider(name: string): { capabilities: { persona?: boolean; outputSchema?: boolean; toolFilter?: boolean; depthLimit?: boolean } } | undefined;
-      start(provider: string, request: {
-        label: string;
-        prompt: { type: 'text'; text: string }[];
-        parent?: unknown;
-        signal?: AbortSignal;
-        maxDepth?: number;
-        outputSchema?: unknown;
-        agentOptions?: { provider?: string; model?: string; maxTokens?: number };
-      }): Promise<unknown>;
-    };
   }
 }
 
 export const name = 'fact-gate';
-export const inject = ['settings', 'subagents'] as const;
+// NOTE: 只注入 settings。subagents/agents 由 dsh-base bundle 的兄弟 entry
+// 提供（subagent 行 / agent 行），当前 context 的 strict 属性读会抛
+// "cannot get property without inject"（cordis reflect.ts:144-164）；同时
+// subagents 在 profile 层可被移除，声明 inject 会让插件在缺少该服务时
+// PENDING 卡死。统一走 ctx.get() 容错（见 apply 内 runPushReview）。
+export const inject = ['settings'] as const;
 
 export const Config: typeof FactGateSettings = FactGateSettings;
 
@@ -125,7 +116,11 @@ function createUserMessage(input: { content: ContentBlock[]; source: unknown }):
   })) as UserMessage;
 }
 
-export function apply(ctx: Context, config: FactGateSettingsValue) {
+// NOTE: apply 必须是箭头函数（无 prototype）— cordis fiber.ts:251 的
+// isConstructor() 对普通 function 返回 true，会把 apply 当类构造器用
+// `new apply(ctx, config)` 调用（实测崩溃：`new apply` 栈 + "cannot get
+// property without inject"）。dsh-ecc 同款坑，箭头函数是唯一修法。
+export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   // ── Settings (live) + env fallbacks ──
   // SettingsScope is an object with get()/watch()/update() — NOT callable.
   // (packages/settings/settings/src/index.ts:103-116; dsh-ecc lib/index.js:38-49
@@ -247,7 +242,12 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   async function runPushReview(exec: { agent?: unknown; signal?: AbortSignal }): Promise<string | null> {
     const cfg = s();
     if (!cfg.pushReviewEnabled) return null;
-    const providers = ctx.subagents.list();
+    // subagents is provided by a sibling entry (@deepseek-ai/dsh-subagent in
+    // the dsh-base bundle); strict ctx.subagents would throw at apply time —
+    // read non-strict and degrade gracefully (subagent-less profiles skip).
+    const subagents = ctx.get('subagents') as { list(): string[]; start(...args: unknown[]): Promise<unknown> } | undefined;
+    if (!subagents) return null;
+    const providers = subagents.list();
     if (providers.length === 0) return null;
     // SubagentRuntime.start contract: request.parent AND request.signal are
     // REQUIRED — the in-process driver accesses both directly
@@ -269,7 +269,7 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
       // signal 会在审查完成前被连带取消 (实测: 子代理创建后 ~1s 被
       // turn/end aborted/parent 杀死, 审查永不产出)。自持 signal 与
       // 工具生命周期解耦, 审查独立跑完。
-      const run = await ctx.subagents.start(provider, {
+      const run = await subagents.start(provider, {
         label: 'fact-gate push review',
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
         parent: parent as never,
@@ -402,8 +402,15 @@ export function apply(ctx: Context, config: FactGateSettingsValue) {
   });
 
   // Resumed sessions do not re-emit agent/created — attach to already-live
-  // agents (dsh-ecc ctx.agents.list() pattern, lib:112-164).
-  const agentsService = (ctx as unknown as { agents?: { list(): unknown[] } }).agents;
+  // agents. NOTE: use ctx.get('agents') (non-strict) — the agents service is
+  // provided by a SIBLING entry (@deepseek-ai/dsh-agent in the dsh-base
+  // bundle layer), so a strict read (ctx.agents) throws "cannot get property
+  // without inject" at apply time (cordis reflect.ts:144-164); strict reads
+  // only resolve services of ancestor/own fibers. get() returns undefined
+  // when the sibling has not started yet — that is fine, the agent/created
+  // listener above still catches agents created later (dsh-ecc lib:162-164
+  // precedent).
+  const agentsService = ctx.get('agents') as { list(): unknown[] } | undefined;
   if (agentsService && typeof agentsService.list === 'function') {
     for (const agent of agentsService.list()) attachAgent(agent);
   }
