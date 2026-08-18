@@ -1,13 +1,4 @@
 ---
-AIGC:
-    Label: "1"
-    ContentProducer: 001191110102MACQD9K64018705
-    ProduceID: 2631580580843628_0-drive/214983621228355482/claude-code-constraints-and-gateguard_1786955084071_0_v4th.md
-    ReservedCode1: ""
-    ContentPropagator: 001191110102MACQD9K64028705
-    PropagateID: 2631580580843628#1786955390734
-    ReservedCode2: ""
----
 # Claude Code 内置约束 与 GateGuard（Fact-Forcing Gate）机制详解
 
 > 文档日期：2026-08-17
@@ -358,5 +349,3 @@ Present the facts, then retry the same operation.
 5. **机制层级**：用户指令 > skills > 默认行为；拦截型（GateGuard/内置约束）vs 引导型（superpowers/mnemon）之分。
 
 ---
-
-> 本内容由 Coze AI 生成，请遵循相关法律法规及《人工智能生成合成内容标识办法》使用与传播。
