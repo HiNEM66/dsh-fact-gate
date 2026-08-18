@@ -34,9 +34,6 @@ import type { PreToolDecision, PostToolDecision } from '@deepseek-ai/dsh-tools';
 import type { UserMessage, ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 import { decideGate, type GateContext } from './gates.ts';
 import { compileExemptGlobs, isGateGuardDisabled, isRoutineBashGateDisabled } from './detect-destructive.ts';
@@ -136,21 +133,6 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
 
   const stateStore = new FactGateStateStore(process.env.FACT_GATE_STATE_DIR);
   stateStore.pruneStaleFiles();
-
-  // Disk-backed diagnostics: the harness mounts no console exporter for plugin
-  // logs (logger messages only reach the in-memory buffer), so push-review
-  // trace lines go to <stateDir>/fact-gate-debug.log for real-machine triage.
-  // Never throws — a debug log must not break the gate.
-  const debugDir = process.env.FACT_GATE_STATE_DIR ?? join(homedir(), '.dsh', 'fact-gate');
-  function debugLog(message: string): void {
-    try {
-      mkdirSync(debugDir, { recursive: true });
-      appendFileSync(join(debugDir, 'fact-gate-debug.log'), `${Date.now()} ${message}\n`);
-    } catch {
-      // ignore — diagnostics only
-    }
-  }
-  debugLog('plugin apply: mounted');
 
   // Denial budget: settings `fullDenials` (live, project-overridable) takes
   // precedence; the env override is the explicit CLI escape hatch.
@@ -302,7 +284,6 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   async function runPushReview(exec: { agent?: unknown; signal?: AbortSignal }): Promise<string | null> {
     const cfg = s();
     if (!cfg.pushReviewEnabled) {
-      debugLog('runPushReview: pushReviewEnabled=false — skip');
       return null;
     }
     // subagents is provided by a sibling entry (@deepseek-ai/dsh-subagent in
@@ -310,12 +291,10 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     // read non-strict and degrade gracefully (subagent-less profiles skip).
     const subagents = ctx.get('subagents') as { list(): string[]; start(...args: unknown[]): Promise<unknown> } | undefined;
     if (!subagents) {
-      debugLog('runPushReview: ctx.get("subagents") = undefined — skip');
       return null;
     }
     const providers = subagents.list();
     if (providers.length === 0) {
-      debugLog('runPushReview: subagents service present but list() empty — skip');
       return null;
     }
     // SubagentRuntime.start contract: request.parent AND request.signal are
@@ -327,12 +306,10 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     // No parent (subject-less call) → skip rather than crash.
     const parent = exec.agent;
     if (!parent) {
-      debugLog('runPushReview: exec.agent (parent) missing — skip');
       ctx.logger.warn('[fact-gate] push review skipped: exec.agent (parent) missing');
       return null;
     }
     const provider = cfg.pushReviewProvider || providers[0]!;
-    debugLog(`runPushReview: starting review via "${provider}" (providers=${providers.join(',')})`);
     try {
       // signal: 插件自持 AbortController — 绝不复用 exec.signal。
       // exec.signal 是工具调用的 caller signal, 工具收尾时被 agent-loop
@@ -364,7 +341,6 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         const settled = await run.result;
         // structured 优先: outputSchema 满足时 provider 返回校验过的 JSON。
         // 旧路径保留: stopReason 非 completed 或 structured 缺失时回退文本解析。
-        debugLog(`runPushReview: child settled (structured=${settled.structured !== undefined}, stopReason=${settled.stopReason ?? 'n/a'})`);
         if (settled.structured !== undefined) {
           return formatReviewMessage(settled.structured as PushReviewResult);
         }
@@ -386,7 +362,6 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         void run.dispose?.().catch(() => {});
       }
     } catch (e) {
-      debugLog(`runPushReview: subagents.start threw: ${String(e)}`);
       ctx.logger.warn(`[fact-gate] push review failed: ${String(e)}`);
       return null;
     }
@@ -432,12 +407,9 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     // post-execute receives the pwsh exec directly).
     if (exec.name === 'pwsh' || exec.name === 'bash') {
       const command = (exec.arguments as Record<string, string> | undefined)?.command ?? '';
-      const isPush = isGitPushCommand(command);
-      debugLog(`post-execute: name=${exec.name} isError=${result.isError === true} isGitPush=${isPush}`);
-      if (!result.isError && isPush && gateEnabled()) {
+      if (!result.isError && isGitPushCommand(command) && gateEnabled()) {
         const stdoutText = JSON.stringify(result) ?? '';
         const triggered = maybePushReview(exec, stdoutText, exec.agent);
-        debugLog(`post-execute: maybePushReview triggered=${triggered}`);
         if (triggered) return next();
       }
     }
@@ -496,10 +468,7 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
     const args = dispatch.exec.arguments as Record<string, unknown> | undefined;
     const direct = typeof args?.command === 'string' ? args.command : '';
     const code = typeof args?.code === 'string' ? args.code : '';
-    const directHit = isGitPushCommand(direct);
-    const laxHit = isGitPushCommandLax(code);
-    debugLog(`code-dispatch-log: sub=${dispatch.name} direct=${directHit} lax=${laxHit}`);
-    if (!directHit && !laxHit) return next();
+    if (!isGitPushCommand(direct) && !isGitPushCommandLax(code)) return next();
     const text = dispatch.content.map(b => (b as { text?: string }).text ?? '').join('\n');
     maybePushReview(dispatch.exec, text, dispatch.agent);
     return next();
