@@ -41,9 +41,9 @@ Fact-Forcing Gate for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 
 | 功能 | 行为 |
 |---|---|
-| 成本告警 | `session/event` 的 `assistant/message.usage` 累加（usage 随消息同行）→ 超阈值（默认 1M tokens）注入 `COST WARNING` |
+| 成本告警 | turn 计数估算（`agent/turn-stopping` 累加，约 1 万 token/turn；`assistant/message.usage` 在 store 作用域不可达）→ 超阈值注入 `COST WARNING` |
 | 项目配置 | `.fact-gate.yml` 项目级覆盖（`gateguard init` 对应物），按会话 cwd 动态刷新 |
-| compaction 钩子 | `compaction/start` 事件（dsh 的 PreCompact 等价物）→ 压缩前注入保留提示 |
+| compaction 钩子 | ⚠️ 平台限制：`compaction/start` 事件在 session store 作用域分发，插件 fiber 不可达——设置保留、默认关闭，待 dsh 暴露可达事件后接线 |
 
 ### 基础设施
 
@@ -83,7 +83,7 @@ fact-gate:
   pushReviewProvider: ''   # 子代理 provider（空 = 第一个注册的）
   pushReviewMaxCommits: 5
   costWarningThreshold: 1000000  # 会话 token 告警阈值（0 = 关）
-  compactionNotice: true   # 压缩前提示
+  compactionNotice: false  # ⚠️ 平台限制：compaction/start 插件不可达，默认关（保留待接线）
 ```
 
 **项目级配置**（`<项目根>/.fact-gate.yml`，覆盖用户 settings）：
@@ -126,8 +126,8 @@ src/
 | settings live | `ctx.settings.register(NS, Schema, {applies:'live'})` | packages/settings/settings/src/index.ts:435 |
 | 子代理豁免 | `delegationDepthOf(exec.agent) > 0` | packages/subagent/subagent/src/depth.ts:28-36（内联） |
 | push 审查委派 | `ctx.subagents.start(provider, request)` | packages/subagent（inject 注入） |
-| token usage | `session/event` 的 `assistant/message.usage` | packages/core/session/src/types.ts:265-273 |
-| 压缩前事件 | `compaction/start` session event | packages/compaction/compaction-basic/src/region.ts:189 |
+| token usage | `assistant/message.usage`（store 作用域，插件不可达——成本告警用 turn 估算降级） | packages/core/session/src/types.ts:265-273 |
+| 压缩前事件 | `compaction/start` session event（store 作用域，插件不可达——未接线） | packages/compaction/compaction-basic/src/region.ts:189 |
 
 ### 关键设计约束
 
@@ -146,9 +146,9 @@ src/
 | 内置约束② 不可重复读 | ⚠️ duplicate-read.ts（默认 OFF，hint 非强制） | 软实现 |
 | 内置约束③④⑤ | ✅ harness 天然行为 | 等价 |
 | security-guidance push 审查 | ✅ push-review.ts（子代理 + 清单 prompt） | 功能等价 |
-| 成本告警 | ✅ cost-warning.ts（token 计数，非美元） | 量纲不同 |
+| 成本告警 | ⚠️ turn 估算降级（usage 在 store 作用域不可达） | 降级实现 |
 | 范围告警 | ✅ scope-warning.ts | 等价 |
-| PreCompact | ✅ compaction/start 钩子 | 事件等价 |
+| PreCompact | ⚠️ 未接线（compaction/start store 作用域不可达） | 平台限制 |
 | mnemon 4-hook | ✅ dsh-mnemon 已有 | 等价 |
 
 ### 平台限制（未实现）
@@ -206,7 +206,7 @@ npm run build     # tsc → lib/
 |---|---|---|
 | 一期 | 4 门 + 状态机 + run_code 告警 | ✅ |
 | 二期 | 范围告警 + 重复读 + push 审查 | ✅ |
-| 三期 | 成本告警 + 项目配置 + compaction 钩子 | ✅ |
+| 三期 | 成本告警（turn 估算）+ 项目配置 + compaction 钩子（⚠️ 平台限制，未接线） | ⚠️ |
 | 四期（待定） | 进程外子代理语义对齐 / run_code 全语义检测 / 市场发布与文档站点 / 与 dsh-mnemon 深度集成 | ⏳ 视需求 |
 
 完整设计与评估记录见 [flex-ate-framework docs/dsh-fact-gate-plan.md](https://github.com/HiNEM66/flex-ate-framework/blob/master/docs/dsh-fact-gate-plan.md)。

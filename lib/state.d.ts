@@ -34,5 +34,3 @@ export declare function resolveSessionKey(agentId: string | undefined, env: {
 }): string;
 /** Sanitize a file path for message embedding: strip control chars / bidi overrides / newlines. */
 export declare function sanitizePath(filePath: string): string;
-/** Is this a Claude-settings-like path (exempt from gating)? */
-export declare function isSettingsPath(filePath: string): boolean;

@@ -41,6 +41,13 @@ export interface GateContext {
   /** When warnOnly, gate hits are recorded here (callId → warn message) for post-execute attach. */
   pendingWarns?: Map<string, string>;
   isSubagent: boolean;
+  /**
+   * Per-gate arming filter (enabledHooks granularity). Absent = all gates
+   * armed. Only consulted by the shell surface: the destructive gate fires
+   * only when `destructive` is true, the routine gate only when `routine`
+   * is true. Off gates are skipped entirely (state untouched).
+   */
+  gateFilter?: { destructive?: boolean; routine?: boolean };
 }
 
 export interface GateInput {
@@ -73,12 +80,12 @@ function isWriteTarget(toolName: string, args: Record<string, unknown>): boolean
   return false;
 }
 
-function denyOrWarn(ctx: GateContext, callId: string, reason: string, opts: { includeRecoveryHint?: boolean } = {}): GateDecision {
+function denyOrWarn(ctx: GateContext, callId: string, reason: string): GateDecision {
   if (ctx.warnOnly) {
     ctx.pendingWarns?.set(callId, reason);
     return { kind: 'allow' };
   }
-  return { kind: 'deny', reason: opts.includeRecoveryHint === false ? reason : reason };
+  return { kind: 'deny', reason };
 }
 
 /**
@@ -105,7 +112,7 @@ export function decideGate(input: GateInput, ctx: GateContext, callId: string): 
       }
       if (denials > ctx.fullDenials) {
         const action = isWriteTarget(toolName, args) ? 'creation' : 'edit';
-        return denyOrWarn(ctx, callId, condensedGateMsg(action, filePath, denials), { includeRecoveryHint: false });
+        return denyOrWarn(ctx, callId, condensedGateMsg(action, filePath, denials));
       }
       const msg = isWriteTarget(toolName, args) ? writeGateMsg(filePath) : editGateMsg(filePath);
       return denyOrWarn(ctx, callId, msg);
@@ -119,22 +126,33 @@ export function decideGate(input: GateInput, ctx: GateContext, callId: string): 
     if (isReadOnlyGitIntrospection(command)) {
       return { kind: 'allow' };
     }
-    if (isDestructiveBash(command, ctx.detectorConfig)) {
+    const destructiveArmed = ctx.gateFilter?.destructive !== false;
+    const routineArmed = ctx.gateFilter?.routine !== false;
+    const isDestructive = isDestructiveBash(command, ctx.detectorConfig);
+    if (destructiveArmed && isDestructive) {
       // Gate destructive commands on first attempt; allow retry after facts presented.
       const key = '__destructive__' + createHash('sha256').update(command).digest('hex').slice(0, 16);
       if (!ctx.store.isChecked(ctx.sessionKey, key)) {
         if (!ctx.store.markChecked(ctx.sessionKey, key)) {
           return { kind: 'allow' };
         }
-        return denyOrWarn(ctx, callId, destructiveBashMsg(), { includeRecoveryHint: false });
+        return denyOrWarn(ctx, callId, destructiveBashMsg());
       }
       return { kind: 'allow' };
     }
-    if (!ctx.store.isChecked(ctx.sessionKey, ROUTINE_BASH_SESSION_KEY)) {
+    // A destructive command whose destructive hook is OFF still falls through
+    // to the routine gate (it is still a command); a non-destructive command
+    // skips the routine gate entirely when the routine hook is off.
+    if (routineArmed && !ctx.store.isChecked(ctx.sessionKey, ROUTINE_BASH_SESSION_KEY)) {
       if (!ctx.store.markChecked(ctx.sessionKey, ROUTINE_BASH_SESSION_KEY)) {
         return { kind: 'allow' };
       }
-      return denyOrWarn(ctx, callId, routineBashMsg(), { includeRecoveryHint: false });
+      const key = '__destructive__' + createHash('sha256').update(command).digest('hex').slice(0, 16);
+      // A destructive command falling through (destructive hook off) also
+      // clears its destructive marker — otherwise the retry after presenting
+      // routine facts would be denied as a fresh destructive command.
+      ctx.store.markChecked(ctx.sessionKey, key);
+      return denyOrWarn(ctx, callId, routineBashMsg());
     }
     return { kind: 'allow' };
   }

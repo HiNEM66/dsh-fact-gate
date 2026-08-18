@@ -42,8 +42,13 @@ export const FactGateSettings = Schema.object({
   pushReviewMaxCommits: Schema.number().default(5).min(1).max(20),
   /** Session token threshold for COST WARNING (0 = off). */
   costWarningThreshold: Schema.number().default(1_000_000).min(0),
-  /** Inject a notice when the session context is compacted (compaction/start). */
-  compactionNotice: Schema.boolean().default(true),
+  /**
+   * Inject a notice when the session context is compacted (compaction/start).
+   * NOTE: compaction/start is dispatched on the session STORE scope, which a
+   * plugin fiber cannot listen to (index.ts 附注) — this setting is reserved
+   * for a future reachable event; default OFF until then.
+   */
+  compactionNotice: Schema.boolean().default(false),
 });
 
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;

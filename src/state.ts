@@ -248,9 +248,3 @@ export function sanitizePath(filePath: string): string {
   }
   return sanitized.trim().slice(0, 500);
 }
-
-/** Is this a Claude-settings-like path (exempt from gating)? */
-export function isSettingsPath(filePath: string): boolean {
-  const normalized = String(filePath || '').replace(/\\/g, '/').toLowerCase();
-  return /(^|\/)\.dsh\/settings\.yaml$/.test(normalized);
-}

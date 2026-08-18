@@ -134,8 +134,13 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
   const stateStore = new FactGateStateStore(process.env.FACT_GATE_STATE_DIR);
   stateStore.pruneStaleFiles();
 
-  // Denial budget from env override (FACT_GATE_FULL_DENIALS), like upstream.
-  const fullDenials = () => getFullDenialBudget(process.env.FACT_GATE_FULL_DENIALS);
+  // Denial budget: settings `fullDenials` (live, project-overridable) takes
+  // precedence; the env override is the explicit CLI escape hatch.
+  const fullDenials = () => {
+    const envValue = getFullDenialBudget(process.env.FACT_GATE_FULL_DENIALS);
+    const cfgValue = s().fullDenials;
+    return Number.isInteger(cfgValue) && cfgValue >= 0 ? cfgValue : envValue;
+  };
 
   // Per-call warn-mode bookkeeping (warnOnly gate hits → attach at post-execute).
   const pendingWarns = new Map<string, string>();
@@ -185,9 +190,22 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
       isSubagent: isSubagentCall(exec),
     };
 
-    // Edit/Write surface.
+    // Edit/Write surface — per-gate hook gating: `enabledHooks` is checked at
+    // the granularity of the gate the call would hit (edit gate vs write gate),
+    // NOT for the whole branch. Mapping: edit/str_replace_editor(str_replace|insert)
+    // → 'edit' hook; write/str_replace_editor(create) → 'write' hook.
+    const isEditTool = toolName === 'edit' || toolName === STR_REPLACE_EDITOR;
+    const isWriteTool = toolName === 'write';
     if (EDIT_TOOLS.has(toolName) || WRITE_TOOLS.has(toolName) || toolName === STR_REPLACE_EDITOR) {
-      if (!hookEnabled('edit') && !hookEnabled('write')) return Promise.resolve(next());
+      if (isWriteTool && !hookEnabled('write')) return Promise.resolve(next());
+      if (isEditTool) {
+        // str_replace_editor command decides the gate: create → write gate.
+        const command = typeof (exec.arguments as Record<string, unknown> | undefined)?.command === 'string'
+          ? (exec.arguments as Record<string, string>).command
+          : '';
+        const gate = command === 'create' ? 'write' : 'edit';
+        if (!hookEnabled(gate)) return Promise.resolve(next());
+      }
       const decision = decideGate(
         { toolName, args: (exec.arguments ?? {}) as Record<string, unknown> },
         gateCtx,
@@ -199,11 +217,16 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
       return Promise.resolve(next());
     }
 
-    // Shell surface (pwsh / bash).
+    // Shell surface (pwsh / bash) — per-gate hook gating: destructive gate
+    // and routine gate are each controlled by their own enabledHooks entry
+    // (a gate whose hook is off is skipped, the other still fires).
     if (SHELL_TOOLS.has(toolName)) {
+      const routineHook = hookEnabled('routine-bash') && cfg.routineBashEnabled;
+      const destructiveHook = hookEnabled('destructive-bash');
+      if (!routineHook && !destructiveHook) return Promise.resolve(next());
       const decision = decideGate(
         { toolName, args: (exec.arguments ?? {}) as Record<string, unknown> },
-        gateCtx,
+        { ...gateCtx, gateFilter: { destructive: destructiveHook, routine: routineHook } },
         exec.callId ?? '',
       );
       if (decision.kind === 'deny') {

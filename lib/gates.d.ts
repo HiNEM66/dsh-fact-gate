@@ -33,6 +33,16 @@ export interface GateContext {
     /** When warnOnly, gate hits are recorded here (callId → warn message) for post-execute attach. */
     pendingWarns?: Map<string, string>;
     isSubagent: boolean;
+    /**
+     * Per-gate arming filter (enabledHooks granularity). Absent = all gates
+     * armed. Only consulted by the shell surface: the destructive gate fires
+     * only when `destructive` is true, the routine gate only when `routine`
+     * is true. Off gates are skipped entirely (state untouched).
+     */
+    gateFilter?: {
+        destructive?: boolean;
+        routine?: boolean;
+    };
 }
 export interface GateInput {
     /** Normalized tool name (already mapped to dsh surface). */

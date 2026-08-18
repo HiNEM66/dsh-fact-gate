@@ -39,7 +39,12 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     pushReviewMaxCommits: Schema<number, number>;
     /** Session token threshold for COST WARNING (0 = off). */
     costWarningThreshold: Schema<number, number>;
-    /** Inject a notice when the session context is compacted (compaction/start). */
+    /**
+     * Inject a notice when the session context is compacted (compaction/start).
+     * NOTE: compaction/start is dispatched on the session STORE scope, which a
+     * plugin fiber cannot listen to (index.ts 附注) — this setting is reserved
+     * for a future reachable event; default OFF until then.
+     */
     compactionNotice: Schema<boolean, boolean>;
 }>, Schemastery.ObjectT<{
     /** Total switch. false = completely pass through (env FACT_GATE=off). */
@@ -70,7 +75,12 @@ export declare const FactGateSettings: Schema<Schemastery.ObjectS<{
     pushReviewMaxCommits: Schema<number, number>;
     /** Session token threshold for COST WARNING (0 = off). */
     costWarningThreshold: Schema<number, number>;
-    /** Inject a notice when the session context is compacted (compaction/start). */
+    /**
+     * Inject a notice when the session context is compacted (compaction/start).
+     * NOTE: compaction/start is dispatched on the session STORE scope, which a
+     * plugin fiber cannot listen to (index.ts 附注) — this setting is reserved
+     * for a future reachable event; default OFF until then.
+     */
     compactionNotice: Schema<boolean, boolean>;
 }>>;
 export type FactGateSettingsValue = ReturnType<typeof FactGateSettings>;
