@@ -312,7 +312,11 @@ export const apply = (ctx: Context, config: FactGateSettingsValue) => {
         prompt: [{ type: 'text', text: PUSH_REVIEW_PROMPT(cfg.pushReviewMaxCommits) }],
         parent: parent as never,
         signal: new AbortController().signal,
-        agentOptions: { maxTokens: 4000 },
+        // 真机实测: 4000 maxTokens 太小 — 审查子代理被 max-tokens 截断零产出
+        // (session-33d47ae9 子代理日志: turn/end reason=max-tokens)。
+        // 32000 单步输出上限: 容纳继承自父会话的 high reasoning + diff 输出;
+        // 配合 PUSH_REVIEW_PROMPT 的"只审 diff 不读仓库"约束, 步骤收敛 2-4 步。
+        agentOptions: { maxTokens: 32000 },
       }) as { output: { content?: { type: string; text?: string }[] }; stopReason?: string };
       const text = run.output?.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('') ?? '';
       if (text.trim()) {

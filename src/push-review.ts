@@ -29,16 +29,18 @@ export function isGitPushCommand(command: string): boolean {
 export const PUSH_REVIEW_PROMPT = (maxCommits: number): string => [
   'You are a security reviewer auditing the most recent git commits.',
   '',
-  'Run `git log --name-only --format=%H%n%s -N` with N=' + maxCommits + ' to see the commits and files, then review the changed code for:',
+  `Step 1 — run \`git log -p --name-only --format=%H%n%s -${maxCommits}\` to see the commits and their full diffs.`,
+  'Step 2 — review ONLY the code changed in those diffs for:',
   '  1. Authentication/authorization flaws (IDOR, missing ownership checks, fail-open)',
   '  2. Hardcoded secrets / credentials',
   '  3. Injection (SQL, shell, path traversal, XSS)',
   '  4. Resource leaks (connections, file handles, threads)',
   '  5. SSRF / unsafe external requests',
   '',
+  'Do NOT read whole repository source files — the diff above is the complete review scope. Do NOT run any other commands.',
   'Do NOT dismiss findings merely because the service is internal — internal services are common SSRF/IDOR targets.',
   '',
-  'Return JSON: {"vulns_found": <int>, "affected_files": [<string>], "findings": [{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "issue": <string>, "suggested_fix": <string>}]}',
+  'Step 3 — return ONLY the JSON: {"vulns_found": <int>, "affected_files": [<string>], "findings": [{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "issue": <string>, "suggested_fix": <string>}]}',
   'If no vulnerabilities, return {"vulns_found": 0, "affected_files": [], "findings": []}.',
 ].join('\n');
 
