@@ -11,7 +11,7 @@ import { decideGate } from '../lib/gates.js'
 import { scanDangerApis, dangerAdvisoryMessage } from '../lib/run-code-advisory.js'
 import { ScopeWarningTracker } from '../lib/scope-warning.js'
 import { DuplicateReadTracker } from '../lib/duplicate-read.js'
-import { isGitPushCommand, formatReviewMessage } from '../lib/push-review.js'
+import { isGitPushCommand, isGitPushCommandLax, formatReviewMessage } from '../lib/push-review.js'
 
 function tempStore() {
   const dir = mkdtempSync(join(tmpdir(), 'fact-gate-test-'))
@@ -375,6 +375,16 @@ describe('phase-2: push review', () => {
     assert.equal(isGitPushCommand('git -C /x push -u origin dev'), true)
     assert.equal(isGitPushCommand('git status'), false)
     assert.equal(isGitPushCommand('ls'), false)
+  })
+  it('detects git push inside run_code program text (lax carrier match)', async () => {
+    // Real-machine shape: CodeDispatchLog.exec is the outer run_code execution;
+    // the command is a tools.pwsh({ command: ... }) call inside the code program.
+    const codeTpl = 'const safe = "-c safe.directory=D:/x";\nconst push = await tools.pwsh({ command: `git ${safe} push`, description: "Push to origin" });'
+    assert.equal(isGitPushCommandLax(codeTpl), true)
+    assert.equal(isGitPushCommandLax('const r = await tools.pwsh({ command: `git ${safe} branch --show-current`, description: "Branch" });'), false)
+    assert.equal(isGitPushCommandLax('const r = await tools.pwsh({ command: "git status --short", description: "Status" });'), false)
+    // false positives are allowed at this stage (filtered by the `->` marker downstream)
+    assert.equal(isGitPushCommandLax('const r = await tools.pwsh({ command: `git log --grep=push`, description: "Log" });'), true)
   })
   it('formats review findings', async () => {
     const msg = formatReviewMessage({ vulns_found: 1, affected_files: ['a.py'], findings: [{ severity: 'HIGH', issue: 'IDOR', suggested_fix: 'add ownership check' }] })

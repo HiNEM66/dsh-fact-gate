@@ -18,6 +18,7 @@ export interface PushReviewConfig {
     maxCommits: number;
 }
 export declare function isGitPushCommand(command: string): boolean;
+export declare function isGitPushCommandLax(text: string): boolean;
 export declare const PUSH_REVIEW_PROMPT: (maxCommits: number) => string;
 export interface PushFinding {
     severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';

@@ -26,6 +26,21 @@ export function isGitPushCommand(command: string): boolean {
   return GIT_PUSH_RE.test(command);
 }
 
+// Code-mode carrier: `CodeDispatchLog.exec` is the OUTER run_code execution,
+// whose `arguments` are `{ code, description }` (packages/core/tools/src/
+// code-mode.ts:505 — the inner sub-call's own arguments are not exposed on
+// the event). The command text lives inside the `code` program as a
+// `tools.pwsh({ command: ... })` call, often a template literal whose
+// interpolations (`${safe}`) cannot be statically expanded. Match per line:
+// `git ... push` with anything in between; false positives (e.g.
+// `git log --grep=push`) are filtered downstream by the `->` success-marker
+// check in maybePushReview.
+const GIT_PUSH_LAX_RE = /\bgit\s[^\n]{0,200}\bpush\b/i;
+
+export function isGitPushCommandLax(text: string): boolean {
+  return GIT_PUSH_LAX_RE.test(text);
+}
+
 export const PUSH_REVIEW_PROMPT = (maxCommits: number): string => [
   'You are a security reviewer auditing the most recent git commits.',
   '',
